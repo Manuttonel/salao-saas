@@ -1,0 +1,63 @@
+# Sobe os 3 serviços do projeto: banco PostgreSQL, backend Flask e
+# frontend React (servido pelo Vite em modo dev).
+#
+# Como usar:
+#   1. Copie backend/.env.example para backend/.env e preencha as chaves
+#      (o DATABASE_URL já vem certo para funcionar com o serviço "db"
+#      abaixo, não precisa mudar).
+#   2. Copie frontend/.env.example para frontend/.env.
+#   3. Rode: docker-compose up --build
+#   4. Backend em http://localhost:5000, frontend em http://localhost:5173.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: salao_saas
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # Dentro da rede do Docker, o banco é acessado pelo nome do
+      # serviço ("db"), não por "localhost" — sobrescrevemos aqui para
+      # não depender do que estiver no .env local.
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/salao_saas
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "flask db upgrade && python run.py"
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    env_file:
+      - ./frontend/.env
+    environment:
+      VITE_API_URL: http://localhost:5000/api
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
