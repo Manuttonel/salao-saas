@@ -53,7 +53,7 @@ salao-saas/
 │   │   ├── services/    # agendador, whatsapp, bot_whatsapp, cliente, mercado_pago
 │   │   └── scheduler/   # jobs (lembretes, vencimentos, expiração de pedidos)
 │   ├── migrations/      # Alembic
-│   ├── tests/           # pytest (30 testes)
+│   ├── tests/           # pytest (34 testes)
 │   └── Dockerfile
 ├── frontend/
 │   ├── src/
@@ -136,28 +136,42 @@ cobrança devolve um erro explicando o que falta e o WhatsApp é simulado.
    ao endereço do webhook.
 4. Preencha as credenciais do provedor e coloque `WHATSAPP_MODO_SIMULACAO=false`.
 
-## Publicar (GitHub + Vercel + backend)
+## Publicar (GitHub + Supabase + Vercel)
 
-A **Vercel hospeda o frontend**. O backend (Flask com banco PostgreSQL e
-tarefas agendadas) precisa de um servidor sempre ligado — a Vercel não serve
-para isso. O repositório já traz o `render.yaml` para publicar o backend e o
-banco no Render (o `backend/Dockerfile` também serve para Railway, Fly.io etc.).
+São três peças, cada uma no que faz melhor:
 
-1. **GitHub:** envie o código (`git push`). Os arquivos `.env` nunca vão: estão no `.gitignore`.
-2. **Backend no Render:** *New → Blueprint*, escolha este repositório. Preencha
-   `FRONTEND_URL` com o endereço do site na Vercel. As migrações rodam sozinhas
-   a cada deploy. Anote o endereço gerado (ex.: `https://salao-api.onrender.com`).
+| Peça | Onde | Observação |
+|---|---|---|
+| Banco de dados | **Supabase** (PostgreSQL) | Só guarda os dados |
+| Site (frontend) | **Vercel** | Pasta `frontend` |
+| Servidor (backend Flask) | **Render** (ou Railway/Fly.io) | O Supabase e a Vercel **não** rodam um app Flask com tarefas agendadas |
+
+1. **GitHub:** `git push` (os `.env` nunca vão: estão no `.gitignore`).
+2. **Supabase:** crie um projeto. Em *Project Settings → Database → Connect*
+   copie a string do **Session pooler** (porta 5432) — não a *Direct connection*
+   (só IPv6, hospedagens como o Render não alcançam). Cole em `DATABASE_URL`.
+   Crie as tabelas rodando uma vez, com essa `DATABASE_URL` no `backend/.env`:
+   ```bash
+   cd backend && flask db upgrade
+   ```
+   A migração já liga o **RLS** em todas as tabelas, para a API REST pública
+   do Supabase não conseguir ler nem gravar nada (só o backend acessa o banco).
+   > Ao criar tabelas em migrações futuras, ligue o RLS nelas também
+   > (`ALTER TABLE ... ENABLE ROW LEVEL SECURITY`).
+3. **Backend no Render:** *New → Blueprint*, escolha este repositório
+   (`render.yaml`). Preencha `DATABASE_URL` (a do Supabase) e `FRONTEND_URL`
+   (o endereço do site na Vercel). As migrações rodam a cada deploy.
    > O plano gratuito "dorme" após 15 min sem uso e então **não envia os
    > lembretes de WhatsApp nem recebe mensagens do bot**. Para uso real use um plano pago.
-3. **Frontend na Vercel:** *Add New → Project*, importe o repositório, defina
+4. **Frontend na Vercel:** *Add New → Project*, importe o repositório, defina
    **Root Directory = `frontend`** e a variável `VITE_API_URL` =
    `https://SEU-BACKEND/api`. Cada `git push` publica de novo.
-4. **Domínio próprio:** Vercel → *Settings → Domains* → adicione o domínio e
+5. **Domínio próprio:** Vercel → *Settings → Domains* → adicione o domínio e
    aponte o DNS como a Vercel indicar. Depois inclua o domínio em `FRONTEND_URL` no backend.
 
 ## Testes
 
-`pytest` roda 30 testes (precisa do banco `salao_saas_test`): login e
+`pytest` roda 34 testes (precisa do banco `salao_saas_test`): login e
 permissões, solicitação → aceite/recusa, bloqueio de horário só após
 confirmação, disputa entre pedidos, vários administradores, calendário
 (dias marcados e modo "só dias marcados"), duração da avaliação, controle de

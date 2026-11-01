@@ -1,24 +1,21 @@
-# Blueprint do Render (https://render.com): cria o banco PostgreSQL e o
-# servidor do backend (Flask) a partir deste repositório.
+# Blueprint do Render (https://render.com): cria o servidor do backend (Flask).
 #
-# O FRONTEND não fica aqui: ele vai para a Vercel (pasta "frontend").
+# O BANCO DE DADOS fica no Supabase (PostgreSQL) e o FRONTEND na Vercel
+# (pasta "frontend"). Aqui só entra o servidor.
 #
-# Depois de criar o Blueprint, preencha no painel do Render as variáveis
-# marcadas com "sync: false" (são segredos e nunca ficam no repositório):
-#   FRONTEND_URL   endereço do site na Vercel (ex.: https://meusalao.vercel.app)
-#                  — pode listar vários separados por vírgula
-#   MERCADOPAGO_*  e WHATSAPP_*  quando for ativar cobrança e WhatsApp reais
+# Variáveis marcadas com "sync: false" são segredos: preencha no painel do
+# Render depois de criar o Blueprint (nunca ficam no repositório):
+#   DATABASE_URL   string de conexão do Supabase — use a "Session pooler"
+#                  (Project Settings > Database > Connect > Session pooler).
+#                  NÃO use a "Direct connection": ela é só IPv6 e o Render
+#                  não alcança.
+#   FRONTEND_URL   endereço do site na Vercel (ex.: https://meusalao.vercel.app);
+#                  pode listar vários separados por vírgula
+#   MERCADOPAGO_*  quando for ativar a cobrança real
 #
-# Atenção ao plano: o plano gratuito do Render "dorme" após 15 min sem uso,
-# o que atrasa o primeiro acesso e IMPEDE os lembretes automáticos de
-# WhatsApp e o recebimento de mensagens do bot. Para uso real, use um plano
-# pago (o mais barato já mantém o serviço sempre ligado).
-
-databases:
-  - name: salao-db
-    plan: free
-    databaseName: salao_saas
-    user: salao
+# Atenção ao plano: o plano gratuito do Render "dorme" após 15 min sem uso, o
+# que atrasa o primeiro acesso e IMPEDE os lembretes automáticos de WhatsApp e
+# o recebimento de mensagens do bot. Para uso real, use um plano pago.
 
 services:
   - type: web
@@ -32,9 +29,7 @@ services:
       - key: FLASK_ENV
         value: production
       - key: DATABASE_URL
-        fromDatabase:
-          name: salao-db
-          property: connectionString
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: JWT_SECRET_KEY

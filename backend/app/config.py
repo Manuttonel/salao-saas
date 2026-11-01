@@ -36,8 +36,28 @@ def _normalizar_url_banco(url: str) -> str:
     """
     for prefixo in ("postgres://", "postgresql://"):
         if url.startswith(prefixo):
-            return "postgresql+psycopg://" + url[len(prefixo):]
+            url = "postgresql+psycopg://" + url[len(prefixo):]
+            break
+
+    # Supabase só aceita conexões criptografadas.
+    if ("supabase.co" in url or "supabase.com" in url) and "sslmode=" not in url:
+        url += ("&" if "?" in url else "?") + "sslmode=require"
     return url
+
+
+def _opcoes_do_motor(url: str) -> dict:
+    """
+    Opções de conexão do SQLAlchemy. `pool_pre_ping` evita "conexão
+    encerrada" em bancos hospedados que derrubam conexões ociosas.
+
+    O pooler do Supabase em modo TRANSAÇÃO (porta 6543) não aceita os
+    "prepared statements" automáticos do psycopg 3, então os desligamos. No
+    modo SESSÃO (porta 5432, o recomendado para este backend) nada muda.
+    """
+    opcoes = {"pool_pre_ping": True}
+    if ":6543/" in url:
+        opcoes["connect_args"] = {"prepare_threshold": None}
+    return opcoes
 
 
 def _lista_env(nome: str, padrao: str) -> list:
@@ -62,8 +82,7 @@ class Config:
         "postgresql+psycopg://postgres:postgres@localhost:5432/salao_saas",
     ))
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    # Evita erro "conexão encerrada" em bancos hospedados que derrubam conexões ociosas.
-    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
+    SQLALCHEMY_ENGINE_OPTIONS = _opcoes_do_motor(SQLALCHEMY_DATABASE_URI)
 
     # --- JWT (autenticação) ---
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "troque-esta-chave-jwt-tambem")
