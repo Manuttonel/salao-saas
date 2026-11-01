@@ -1,42 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-Envio de mensagens de WhatsApp (confirmação de agendamento, lembretes e
+Envio de mensagens de WhatsApp (solicitações, confirmações, lembretes e
 avisos de cobrança).
 
-Este módulo é uma CAMADA DE ABSTRAÇÃO: o resto da aplicação (rotas,
-jobs do scheduler) só chama as funções `enviar_confirmacao_agendamento`,
-`enviar_lembrete_agendamento` e `enviar_aviso_cobranca` — nenhuma delas
-sabe qual provedor de WhatsApp está por trás. Isso permite trocar de
-provedor mudando só a variável de ambiente WHATSAPP_PROVIDER, sem tocar
-em nenhuma outra parte do código.
+Este módulo é uma CAMADA DE ABSTRAÇÃO: o resto da aplicação só chama as
+funções `enviar_*` — nenhuma delas sabe qual provedor está por trás. Para
+trocar de provedor basta mudar WHATSAPP_PROVIDER no .env.
 
 Dois provedores são suportados:
 
 1. "meta_cloud_api" — WhatsApp Business Cloud API oficial, da Meta.
-   - Requer conta comercial verificada no Meta Business Manager e número
-     de telefone aprovado.
-   - Documentação: https://developers.facebook.com/docs/whatsapp/cloud-api
-   - Credenciais: WHATSAPP_META_TOKEN e WHATSAPP_META_PHONE_NUMBER_ID.
-   - Recomendado para produção / uso comercial sério, mas tem processo
-     de aprovação mais burocrático.
+   Credenciais: WHATSAPP_META_TOKEN e WHATSAPP_META_PHONE_NUMBER_ID.
+   Documentação: https://developers.facebook.com/docs/whatsapp/cloud-api
 
-2. "evolution_api" — Evolution API, projeto open-source muito usado no
-   Brasil, que conecta via QRCode a um número de WhatsApp comum (não
-   precisa de aprovação da Meta). Você mesmo hospeda essa API (ela roda
-   como um serviço próprio, veja https://doc.evolution-api.com).
-   - Credenciais: WHATSAPP_EVOLUTION_BASE_URL, WHATSAPP_EVOLUTION_INSTANCE
-     e WHATSAPP_EVOLUTION_API_KEY.
-   - Mais simples para começar/testar, mas o número fica sujeito às
-     regras de uso comum do WhatsApp (risco de bloqueio em uso abusivo).
+2. "evolution_api" — Evolution API (open-source), conecta por QRCode a um
+   número comum, sem aprovação da Meta. Você hospeda a API.
+   Credenciais: WHATSAPP_EVOLUTION_BASE_URL, WHATSAPP_EVOLUTION_INSTANCE e
+   WHATSAPP_EVOLUTION_API_KEY. Cada salão pode ter a sua própria instância
+   (campo Salao.whatsapp_instancia); sem ela, vale a instância do .env.
 
-Para trocar de provedor: mude WHATSAPP_PROVIDER no backend/.env para
-"meta_cloud_api" ou "evolution_api" e preencha as credenciais
-correspondentes — nenhuma outra alteração de código é necessária.
-
-Enquanto WHATSAPP_MODO_SIMULACAO=true (padrão em desenvolvimento), as
-mensagens não são enviadas de verdade: apenas registradas no log. Isso
-permite desenvolver e testar o fluxo sem gastar créditos de API nem
-precisar de uma instância de WhatsApp configurada.
+Enquanto WHATSAPP_MODO_SIMULACAO=true (padrão em desenvolvimento), nada é
+enviado de verdade: as mensagens só aparecem no log do servidor.
 """
 
 import logging
@@ -44,6 +28,13 @@ import logging
 import requests
 
 logger = logging.getLogger(__name__)
+
+DIAS_SEMANA = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+
+
+def formatar_data_hora(momento) -> str:
+    """datetime -> 'sexta, 07/11 às 14:30' (usado nas mensagens)."""
+    return f"{DIAS_SEMANA[momento.weekday()]}, {momento.strftime('%d/%m')} às {momento.strftime('%H:%M')}"
 
 
 def _enviar_via_meta_cloud_api(app, telefone: str, mensagem: str) -> None:
@@ -62,9 +53,8 @@ def _enviar_via_meta_cloud_api(app, telefone: str, mensagem: str) -> None:
     resposta.raise_for_status()
 
 
-def _enviar_via_evolution_api(app, telefone: str, mensagem: str) -> None:
+def _enviar_via_evolution_api(app, telefone: str, mensagem: str, instancia: str) -> None:
     base_url = app.config["WHATSAPP_EVOLUTION_BASE_URL"].rstrip("/")
-    instancia = app.config["WHATSAPP_EVOLUTION_INSTANCE"]
     url = f"{base_url}/message/sendText/{instancia}"
     headers = {"apikey": app.config["WHATSAPP_EVOLUTION_API_KEY"]}
     payload = {"number": telefone, "text": mensagem}
@@ -72,65 +62,110 @@ def _enviar_via_evolution_api(app, telefone: str, mensagem: str) -> None:
     resposta.raise_for_status()
 
 
-def _enviar_mensagem(app, telefone: str, mensagem: str) -> None:
+def enviar_mensagem(app, telefone: str, mensagem: str, salao=None) -> None:
     """
-    Função interna que decide, com base em WHATSAPP_PROVIDER, para qual
-    provedor real a mensagem deve ir — ou se deve apenas simular o envio.
+    Envia (ou simula) uma mensagem de texto. Uma falha no envio NUNCA
+    derruba a operação principal (ex.: criar agendamento): só é logada.
     """
+    if not telefone:
+        return
+
     if app.config.get("WHATSAPP_MODO_SIMULACAO", True):
         logger.info("[WHATSAPP SIMULADO] Para %s: %s", telefone, mensagem)
         return
 
     provedor = app.config["WHATSAPP_PROVIDER"]
+    instancia = (salao.whatsapp_instancia if salao is not None and salao.whatsapp_instancia
+                 else app.config["WHATSAPP_EVOLUTION_INSTANCE"])
     try:
         if provedor == "meta_cloud_api":
             _enviar_via_meta_cloud_api(app, telefone, mensagem)
         elif provedor == "evolution_api":
-            _enviar_via_evolution_api(app, telefone, mensagem)
+            _enviar_via_evolution_api(app, telefone, mensagem, instancia)
         else:
             raise ValueError(f"WHATSAPP_PROVIDER desconhecido: {provedor}")
         logger.info("Mensagem WhatsApp enviada para %s via %s", telefone, provedor)
     except Exception:
-        # Uma falha ao enviar WhatsApp não deve derrubar a operação
-        # principal (ex.: criar um agendamento) — só registramos o erro.
         logger.exception("Falha ao enviar mensagem WhatsApp para %s", telefone)
 
 
-def enviar_confirmacao_agendamento(app, agendamento) -> None:
-    """Envia ao cliente a confirmação de que o agendamento foi criado."""
-    cliente_nome = agendamento.cliente.usuario.nome
-    telefone = agendamento.cliente.usuario.telefone
-    data_formatada = agendamento.inicio.strftime("%d/%m/%Y às %H:%M")
+def _avisar_cliente(app, agendamento, mensagem: str) -> None:
+    """Envia ao cliente, respeitando a preferência dele de receber WhatsApp."""
+    cliente = agendamento.cliente
+    if not cliente.aceita_notificacoes_whatsapp:
+        return
+    enviar_mensagem(app, cliente.telefone_exibicao, mensagem, agendamento.salao)
+
+
+# ---------------------------------------------------------------------------
+# Fluxo de solicitação -> aceite/recusa
+# ---------------------------------------------------------------------------
+
+def enviar_solicitacao_recebida(app, agendamento) -> None:
+    """Avisa o cliente que o pedido chegou e está aguardando o salão."""
+    _avisar_cliente(app, agendamento, (
+        f"Olá, {agendamento.cliente.nome_exibicao}! Recebemos seu pedido de "
+        f"{agendamento.servico.nome} para {formatar_data_hora(agendamento.inicio)} "
+        f"no {agendamento.salao.nome}. Assim que o salão confirmar, você receberá "
+        f"uma mensagem por aqui."
+    ))
+
+
+def notificar_admins_nova_solicitacao(app, agendamento) -> None:
+    """Avisa o dono e todos os administradores que há uma solicitação para responder."""
+    salao = agendamento.salao
     mensagem = (
-        f"Olá, {cliente_nome}! Seu agendamento em {agendamento.salao.nome} foi "
-        f"confirmado para {data_formatada} com {agendamento.profissional.usuario.nome} "
-        f"({agendamento.servico.nome}). Até lá!"
+        f"Nova solicitação no {salao.nome}: {agendamento.cliente.nome_exibicao} "
+        f"quer {agendamento.servico.nome} em {formatar_data_hora(agendamento.inicio)} "
+        f"({agendamento.servico.duracao_minutos} min). "
+        f"Abra o painel para aceitar ou recusar."
     )
-    _enviar_mensagem(app, telefone, mensagem)
+    for admin in salao.administradores():
+        enviar_mensagem(app, admin.telefone, mensagem, salao)
+
+
+def enviar_confirmacao_agendamento(app, agendamento) -> None:
+    """O salão ACEITOU: o horário está reservado para o cliente."""
+    _avisar_cliente(app, agendamento, (
+        f"Olá, {agendamento.cliente.nome_exibicao}! Seu horário no {agendamento.salao.nome} "
+        f"foi CONFIRMADO para {formatar_data_hora(agendamento.inicio)} com "
+        f"{agendamento.profissional.nome_exibicao} ({agendamento.servico.nome}). Até lá!"
+    ))
+
+
+def enviar_recusa_agendamento(app, agendamento) -> None:
+    """O salão RECUSOU o pedido."""
+    motivo = f" Motivo: {agendamento.motivo_recusa}." if agendamento.motivo_recusa else ""
+    _avisar_cliente(app, agendamento, (
+        f"Olá, {agendamento.cliente.nome_exibicao}. Infelizmente o {agendamento.salao.nome} "
+        f"não conseguiu atender seu pedido de {formatar_data_hora(agendamento.inicio)}.{motivo} "
+        f"Que tal escolher outro horário?"
+    ))
+
+
+def enviar_cancelamento_agendamento(app, agendamento) -> None:
+    """Avisa o cliente quando o SALÃO cancela um horário já confirmado."""
+    _avisar_cliente(app, agendamento, (
+        f"Olá, {agendamento.cliente.nome_exibicao}. Seu horário de "
+        f"{formatar_data_hora(agendamento.inicio)} no {agendamento.salao.nome} foi cancelado. "
+        f"Entre em contato para remarcar."
+    ))
 
 
 def enviar_lembrete_agendamento(app, agendamento, horas_de_antecedencia: int) -> None:
-    """Envia lembrete ao cliente faltando `horas_de_antecedencia` para o horário."""
-    cliente_nome = agendamento.cliente.usuario.nome
-    telefone = agendamento.cliente.usuario.telefone
-    data_formatada = agendamento.inicio.strftime("%d/%m/%Y às %H:%M")
-    if horas_de_antecedencia >= 24:
-        prazo = "amanhã"
-    else:
-        prazo = "em 1 hora"
-    mensagem = (
-        f"Olá, {cliente_nome}! Lembrando que você tem um horário {prazo} "
-        f"({data_formatada}) em {agendamento.salao.nome} com "
-        f"{agendamento.profissional.usuario.nome}. Até já!"
-    )
-    _enviar_mensagem(app, telefone, mensagem)
+    """Lembrete ao cliente faltando `horas_de_antecedencia` para o horário."""
+    prazo = "amanhã" if horas_de_antecedencia >= 24 else "em 1 hora"
+    _avisar_cliente(app, agendamento, (
+        f"Olá, {agendamento.cliente.nome_exibicao}! Lembrando que você tem um horário {prazo} "
+        f"({formatar_data_hora(agendamento.inicio)}) no {agendamento.salao.nome} com "
+        f"{agendamento.profissional.nome_exibicao}. Até já!"
+    ))
 
 
 def enviar_aviso_cobranca(app, salao, mensagem_extra: str = "") -> None:
     """Avisa o dono do salão sobre a situação da assinatura da plataforma."""
     dono = salao.dono
-    mensagem = (
+    enviar_mensagem(app, dono.telefone, (
         f"Olá, {dono.nome}! Sobre a assinatura da plataforma para o salão "
         f"{salao.nome}: {mensagem_extra}"
-    )
-    _enviar_mensagem(app, dono.telefone, mensagem)
+    ), salao)

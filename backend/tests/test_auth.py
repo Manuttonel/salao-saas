@@ -20,7 +20,7 @@ def test_registrar_e_logar_cliente(client):
     assert resposta_login.status_code == 200
     corpo = resposta_login.get_json()
     assert corpo["usuario"]["papel"] == "cliente"
-    assert "cliente_id" in corpo["usuario"]
+    assert corpo["usuario"]["tema"] == "unisex"  # tema padrão até a pessoa escolher outro
 
 
 def test_login_com_senha_errada_falha(client):

@@ -21,3 +21,8 @@ Thumbs.db
 
 # --- Docker ---
 postgres_data/
+
+# --- Ferramentas locais (config do editor/preview e da Vercel) ---
+.claude/
+.vercel/
+*.zip

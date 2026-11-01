@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Rotas de autenticação: registro, login e dados do usuário logado.
+Rotas de autenticação: registro, login, dados do usuário logado e
+preferência de tema.
 
-Também define aqui os decorators de controle de acesso por papel
+Também define os decorators de controle de acesso por papel
 (`papel_requerido`) e a função `usuario_logado()`, usados por TODAS as
-outras rotas protegidas do sistema (salao_routes, agendamento_routes,
-pagamento_routes) para restringir cada endpoint ao(s) papel(is) correto(s).
+outras rotas protegidas do sistema.
 """
 
+import re
 from functools import wraps
 
 from flask import Blueprint, request, jsonify
@@ -18,11 +19,12 @@ from flask_jwt_extended import (
 )
 
 from app.extensions import db
-from app.models.usuario import Usuario, PapelUsuario
-from app.models.profissional import Profissional
-from app.models.cliente import Cliente
+from app.models.usuario import Usuario, PapelUsuario, TEMAS_VALIDOS
 
 auth_bp = Blueprint("auth", __name__)
+
+# Quem pode usar o painel de gestão do salão.
+PAPEIS_ADMIN = (PapelUsuario.DONO, PapelUsuario.ADMINISTRADOR)
 
 
 def usuario_logado() -> Usuario:
@@ -34,14 +36,7 @@ def usuario_logado() -> Usuario:
 def papel_requerido(*papeis_permitidos: PapelUsuario):
     """
     Decorator que combina @jwt_required() com uma checagem de papel.
-
-    Uso:
-        @agendamento_bp.post("/")
-        @papel_requerido(PapelUsuario.CLIENTE)
-        def criar_agendamento():
-            ...
-
-    Se o usuário do token não tiver um dos papéis permitidos, devolve 403.
+    Se o usuário não tiver um dos papéis permitidos, devolve 403.
     """
 
     def decorador(funcao):
@@ -62,17 +57,9 @@ def papel_requerido(*papeis_permitidos: PapelUsuario):
 
 def resposta_se_assinatura_vencida(salao):
     """
-    Checagem usada nas rotas de PAINEL do dono/profissional (gestão do
-    salão, cadastro de profissionais/serviços, agenda interna). Se a
-    assinatura da plataforma estiver vencida, devolve uma resposta 402
-    (Payment Required) pronta para ser retornada pela rota; caso
-    contrário devolve None e a rota segue normalmente.
-
-    Importante: isso NUNCA é aplicado às rotas públicas usadas pelo
-    cliente final (listar salões/serviços/profissionais, consultar
-    horários livres, criar agendamento) — o cliente continua enxergando
-    e usando a agenda mesmo com o salão inadimplente, só o painel
-    administrativo é bloqueado.
+    Nas rotas de PAINEL (gestão do salão), devolve 402 se a assinatura da
+    plataforma estiver vencida; caso contrário None. Nunca é aplicada às
+    rotas públicas do cliente final: ele continua vendo e pedindo horários.
     """
     if not salao.esta_com_acesso_liberado():
         return jsonify({
@@ -82,16 +69,23 @@ def resposta_se_assinatura_vencida(salao):
     return None
 
 
+def montar_resposta_usuario(usuario: Usuario) -> dict:
+    """Dados do usuário + ids que o frontend precisa para escolher o painel certo."""
+    resposta = usuario.to_dict()
+    if usuario.papel == PapelUsuario.PROFISSIONAL and usuario.perfil_profissional:
+        resposta["profissional_id"] = usuario.perfil_profissional.id
+        resposta["salao_id"] = usuario.perfil_profissional.salao_id
+    if usuario.papel in PAPEIS_ADMIN:
+        resposta["saloes"] = [s.id for s in usuario.saloes_administrados()]
+    return resposta
+
+
 @auth_bp.post("/registrar")
 def registrar():
     """
-    Cria um novo usuário. O campo "papel" define o tipo de conta:
-      - "dono": cria só o Usuario (o salão é criado depois, em
-        POST /api/saloes).
-      - "cliente": cria o Usuario + o perfil Cliente.
-      - "profissional": NÃO é criado por aqui — profissionais são
-        convidados pelo dono do salão (veja POST /api/saloes/<id>/profissionais),
-        que já cria o Usuario e o perfil Profissional vinculado ao salão.
+    Autocadastro. Papéis aceitos: "dono" (cria o salão depois, em
+    POST /api/saloes) e "cliente". Administradores e profissionais são
+    cadastrados pelo dono do salão, nunca por aqui.
     """
     dados = request.get_json(silent=True) or {}
 
@@ -104,7 +98,7 @@ def registrar():
     if papel not in (PapelUsuario.DONO.value, PapelUsuario.CLIENTE.value):
         return jsonify({
             "erro": "Papel inválido para autocadastro. Use 'dono' ou 'cliente'. "
-                    "Profissionais são cadastrados pelo dono do salão."
+                    "Administradores e profissionais são cadastrados pelo dono do salão."
         }), 400
 
     if Usuario.query.filter_by(email=dados["email"].lower().strip()).first():
@@ -116,18 +110,17 @@ def registrar():
         telefone=dados["telefone"].strip(),
         papel=PapelUsuario(papel),
     )
+    # Mantém o tema que a pessoa já estava usando antes de criar a conta.
+    if dados.get("tema") in TEMAS_VALIDOS:
+        usuario.tema = dados["tema"]
     usuario.set_senha(dados["senha"])
 
     db.session.add(usuario)
-    db.session.flush()  # garante que usuario.id já existe antes de criar o perfil
-
-    if usuario.papel == PapelUsuario.CLIENTE:
-        db.session.add(Cliente(usuario_id=usuario.id))
-
+    # A ficha de cliente (CRM) é criada por salão, no primeiro pedido de horário.
     db.session.commit()
 
     token = create_access_token(identity=usuario.id)
-    return jsonify({"usuario": usuario.to_dict(), "access_token": token}), 201
+    return jsonify({"usuario": montar_resposta_usuario(usuario), "access_token": token}), 201
 
 
 @auth_bp.post("/login")
@@ -144,19 +137,7 @@ def login():
         return jsonify({"erro": "Esta conta está desativada."}), 403
 
     token = create_access_token(identity=usuario.id)
-
-    resposta = usuario.to_dict()
-    # Inclui o id do perfil específico (profissional/cliente) para o
-    # frontend já saber para qual dashboard redirecionar.
-    if usuario.papel == PapelUsuario.PROFISSIONAL and usuario.perfil_profissional:
-        resposta["profissional_id"] = usuario.perfil_profissional.id
-        resposta["salao_id"] = usuario.perfil_profissional.salao_id
-    if usuario.papel == PapelUsuario.CLIENTE and usuario.perfil_cliente:
-        resposta["cliente_id"] = usuario.perfil_cliente.id
-    if usuario.papel == PapelUsuario.DONO:
-        resposta["saloes"] = [s.id for s in usuario.saloes]
-
-    return jsonify({"usuario": resposta, "access_token": token}), 200
+    return jsonify({"usuario": montar_resposta_usuario(usuario), "access_token": token}), 200
 
 
 @auth_bp.get("/me")
@@ -165,4 +146,26 @@ def me():
     usuario = usuario_logado()
     if usuario is None:
         return jsonify({"erro": "Usuário não encontrado."}), 404
-    return jsonify(usuario.to_dict()), 200
+    return jsonify(montar_resposta_usuario(usuario)), 200
+
+
+@auth_bp.patch("/preferencias")
+@jwt_required()
+def atualizar_preferencias():
+    """Salva o tema escolhido ("unisex", "glow" ou "dark") e a cor do tema unisex."""
+    usuario = usuario_logado()
+    dados = request.get_json(silent=True) or {}
+
+    if "tema" in dados:
+        if dados["tema"] not in TEMAS_VALIDOS:
+            return jsonify({"erro": f"Tema inválido. Use: {', '.join(TEMAS_VALIDOS)}."}), 400
+        usuario.tema = dados["tema"]
+
+    if "cor_primaria" in dados:
+        cor = dados["cor_primaria"]
+        if cor is not None and not re.fullmatch(r"#[0-9a-fA-F]{6}", cor):
+            return jsonify({"erro": "Cor inválida. Use o formato #RRGGBB."}), 400
+        usuario.cor_primaria = cor.lower() if cor else None
+
+    db.session.commit()
+    return jsonify(montar_resposta_usuario(usuario)), 200

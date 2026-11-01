@@ -1,10 +1,18 @@
-// Barra de navegação simples, mostrada em todas as páginas internas
-// (depois do login). Mostra o nome do usuário e um botão de sair.
+// Barra de topo das páginas internas: marca, nome do usuário, seletor de
+// tema e botão de sair.
 
 import { useNavigate } from "react-router-dom";
 import { encerrarSessao } from "../services/api";
+import SeletorTema from "./SeletorTema";
 
-export default function Navbar({ usuario }) {
+const ROTULO_PAPEL = {
+  dono: "Dono",
+  administrador: "Administrador",
+  profissional: "Profissional",
+  cliente: "Cliente",
+};
+
+export default function Navbar({ usuario, titulo }) {
   const navigate = useNavigate();
 
   function sair() {
@@ -13,17 +21,19 @@ export default function Navbar({ usuario }) {
   }
 
   return (
-    <header className="bg-white border-b border-gray-200">
-      <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-        <span className="font-semibold text-brand-700">Salão SaaS</span>
-        <div className="flex items-center gap-4 text-sm">
-          <span className="text-gray-600">
-            {usuario?.nome} <span className="text-gray-400">({usuario?.papel})</span>
+    <header className="barra-topo sticky top-0 z-20">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
+        <div className="min-w-0">
+          <span className="titulo block truncate text-lg text-brand-600">{titulo || "Salão SaaS"}</span>
+        </div>
+
+        <div className="flex items-center gap-2 text-sm sm:gap-3">
+          <span className="hidden text-right leading-tight sm:block">
+            <span className="block font-medium text-ink">{usuario?.nome}</span>
+            <span className="block text-xs text-muted">{ROTULO_PAPEL[usuario?.papel] || usuario?.papel}</span>
           </span>
-          <button
-            onClick={sair}
-            className="px-3 py-1.5 rounded-md border border-gray-300 hover:bg-gray-100 transition"
-          >
+          <SeletorTema />
+          <button onClick={sair} className="btn-outline btn-sm">
             Sair
           </button>
         </div>

@@ -1,153 +1,195 @@
-// Painel do dono do salão.
+// Painel de gestão do salão — usado pelo DONO e pelos ADMINISTRADORES.
 //
-// Fluxo:
-//   1. Se o dono ainda não tem salão cadastrado, mostra o formulário de
-//      criação (POST /api/saloes/).
-//   2. Com o salão criado, mostra: status da assinatura (bloqueia a
-//      gestão se estiver vencida — Salao.acesso_liberado, calculado no
-//      backend), cadastro de serviços, cadastro de profissionais e a
-//      lista de agendamentos do salão.
+// Abas:
+//   Solicitações   pedidos de horário aguardando aceite (com contador)
+//   Agenda         dias disponíveis no calendário + atendimentos do dia
+//   Clientes       controle de clientes (CRM)
+//   Procedimentos  cabelo, unhas, estética... com o tempo de cada um
+//   Equipe         profissionais e administradores
+//   Configurações  dados do salão, bot de WhatsApp, assinatura
+//
+// Se o salão ainda não existe (dono recém-cadastrado), mostra o formulário
+// de criação. Se a assinatura da plataforma estiver vencida, o painel fica
+// bloqueado (o cliente final continua usando a agenda normalmente).
 
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import api, { obterUsuarioLogado, extrairMensagemErro } from "../services/api";
 import Navbar from "../components/Navbar";
+import SolicitacoesTab from "../components/admin/SolicitacoesTab";
+import AgendaTab from "../components/admin/AgendaTab";
+import ClientesTab from "../components/admin/ClientesTab";
+import ProcedimentosTab from "../components/admin/ProcedimentosTab";
+import EquipeTab from "../components/admin/EquipeTab";
+import ConfigTab from "../components/admin/ConfigTab";
+import { DIAS_SEMANA_CURTO } from "../services/formatar";
 
-const DIAS_SEMANA = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+const ABAS = [
+  { id: "solicitacoes", nome: "Solicitações" },
+  { id: "agenda", nome: "Agenda" },
+  { id: "clientes", nome: "Clientes" },
+  { id: "procedimentos", nome: "Procedimentos" },
+  { id: "equipe", nome: "Equipe" },
+  { id: "config", nome: "Configurações" },
+];
+
+const INTERVALO_SOLICITACOES_MS = 20000;
 
 export default function DashboardDono() {
-  const navigate = useNavigate();
   const usuario = obterUsuarioLogado();
+  const ehDono = usuario.papel === "dono";
 
+  const [salaoId, setSalaoId] = useState(usuario.saloes?.[0] || null);
   const [salao, setSalao] = useState(null);
   const [servicos, setServicos] = useState([]);
   const [profissionais, setProfissionais] = useState([]);
-  const [agendamentos, setAgendamentos] = useState([]);
+  const [pendentes, setPendentes] = useState([]);
+  const [aba, setAba] = useState("solicitacoes");
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
 
-  useEffect(() => {
-    carregarSalaoDoDono();
-  }, []);
+  const recarregarSalao = useCallback(async () => {
+    const { data } = await api.get(`/saloes/${salaoId}`);
+    setSalao(data);
+    return data;
+  }, [salaoId]);
 
-  async function carregarSalaoDoDono() {
-    setCarregando(true);
-    try {
-      if (usuario.saloes && usuario.saloes.length > 0) {
-        const salaoId = usuario.saloes[0];
-        const { data } = await api.get(`/saloes/${salaoId}`);
-        setSalao(data);
-        await Promise.all([carregarServicos(salaoId), carregarProfissionais(salaoId), carregarAgendamentos(salaoId)]);
-      }
-    } catch (e) {
-      setErro(extrairMensagemErro(e));
-    } finally {
-      setCarregando(false);
-    }
-  }
-
-  async function carregarServicos(salaoId) {
+  const recarregarServicos = useCallback(async () => {
     const { data } = await api.get(`/saloes/${salaoId}/servicos`);
     setServicos(data);
-  }
+  }, [salaoId]);
 
-  async function carregarProfissionais(salaoId) {
+  const recarregarProfissionais = useCallback(async () => {
     const { data } = await api.get(`/saloes/${salaoId}/profissionais`);
     setProfissionais(data);
-  }
+  }, [salaoId]);
 
-  async function carregarAgendamentos(salaoId) {
-    const { data } = await api.get(`/agendamentos/`, { params: { salao_id: salaoId } });
-    setAgendamentos(data);
-  }
-
-  async function cancelarAgendamento(id) {
+  const recarregarPendentes = useCallback(async () => {
     try {
-      await api.post(`/agendamentos/${id}/cancelar`);
-      await carregarAgendamentos(salao.id);
-    } catch (e) {
-      alert(extrairMensagemErro(e));
+      const { data } = await api.get("/agendamentos/", { params: { salao_id: salaoId, status: "pendente", futuros: 1 } });
+      setPendentes(data);
+    } catch {
+      // painel bloqueado ou sem rede: mantém a lista anterior
     }
-  }
+  }, [salaoId]);
+
+  // Ao abrir: atualiza a lista de salões do usuário (pode ter mudado desde o login).
+  useEffect(() => {
+    api.get("/auth/me").then(({ data }) => {
+      localStorage.setItem("usuario", JSON.stringify({ ...usuario, ...data }));
+      if (!salaoId && data.saloes?.length) setSalaoId(data.saloes[0]);
+      else if (!data.saloes?.length) setCarregando(false);
+    }).catch(() => setCarregando(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!salaoId) return;
+    setCarregando(true);
+    recarregarSalao()
+      .then((dados) => dados.acesso_liberado && Promise.all([recarregarServicos(), recarregarProfissionais(), recarregarPendentes()]))
+      .catch((e) => setErro(extrairMensagemErro(e)))
+      .finally(() => setCarregando(false));
+  }, [salaoId, recarregarSalao, recarregarServicos, recarregarProfissionais, recarregarPendentes]);
+
+  // Verifica novos pedidos de tempos em tempos (sem precisar recarregar a página).
+  useEffect(() => {
+    if (!salao?.acesso_liberado) return undefined;
+    const intervalo = setInterval(recarregarPendentes, INTERVALO_SOLICITACOES_MS);
+    return () => clearInterval(intervalo);
+  }, [salao?.acesso_liberado, recarregarPendentes]);
+
+  const titulo = salao?.nome || "Salão SaaS";
 
   if (carregando) {
-    return <div className="p-8 text-center text-gray-500">Carregando...</div>;
+    return (
+      <div>
+        <Navbar usuario={usuario} />
+        <p className="p-8 text-center text-muted">Carregando…</p>
+      </div>
+    );
+  }
+
+  if (!salaoId) {
+    return (
+      <div>
+        <Navbar usuario={usuario} />
+        <main className="mx-auto max-w-2xl px-4 py-8">
+          {erro && <p role="alert" className="mb-4 text-sm text-[rgb(var(--bad-fg))]">{erro}</p>}
+          {ehDono ? (
+            <CriarSalaoForm onCriado={(novo) => {
+              localStorage.setItem("usuario", JSON.stringify({ ...usuario, saloes: [novo.id] }));
+              setSalaoId(novo.id);
+            }} />
+          ) : (
+            <div className="card text-sm text-muted">Você ainda não foi vinculado a nenhum salão. Peça ao dono para adicionar você em Equipe → Administradores.</div>
+          )}
+        </main>
+      </div>
+    );
   }
 
   return (
     <div>
-      <Navbar usuario={usuario} />
-      <div className="max-w-5xl mx-auto px-4 py-8 space-y-8">
-        {erro && <p className="text-sm text-red-600">{erro}</p>}
+      <Navbar usuario={usuario} titulo={titulo} />
 
-        {!salao ? (
-          <CriarSalaoForm
-            onCriado={(novoSalao) => {
-              usuario.saloes = [novoSalao.id];
-              localStorage.setItem("usuario", JSON.stringify(usuario));
-              setSalao(novoSalao);
-            }}
-          />
-        ) : (
-          <>
-            <BannerAssinatura salao={salao} navigate={navigate} />
-            <SecaoServicos salaoId={salao.id} servicos={servicos} recarregar={() => carregarServicos(salao.id)} bloqueado={!salao.acesso_liberado} />
-            <SecaoProfissionais salaoId={salao.id} profissionais={profissionais} recarregar={() => carregarProfissionais(salao.id)} bloqueado={!salao.acesso_liberado} />
-            <SecaoAgendamentos agendamentos={agendamentos} onCancelar={cancelarAgendamento} />
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+      {salao && !salao.acesso_liberado ? (
+        <main className="mx-auto max-w-2xl px-4 py-8">
+          <div className="card space-y-3 text-center">
+            <h2 className="titulo text-lg">Painel bloqueado</h2>
+            <p className="text-sm text-muted">A assinatura da plataforma está vencida. Seus clientes continuam vendo a agenda normalmente, mas a gestão do salão fica bloqueada até a regularização.</p>
+            {ehDono ? <Link to="/assinatura" className="btn-primary">Regularizar agora</Link> : <p className="text-sm">Avise o dono do salão para regularizar o pagamento.</p>}
+          </div>
+        </main>
+      ) : (
+        <>
+          <nav className="border-b border-line bg-card/70" aria-label="Seções do painel">
+            <div className="abas-rolagem mx-auto flex max-w-6xl overflow-x-auto px-2" role="tablist">
+              {ABAS.map((item) => (
+                <button key={item.id} role="tab" aria-selected={aba === item.id} className={aba === item.id ? "tab-on" : "tab"} onClick={() => setAba(item.id)}>
+                  {item.nome}
+                  {item.id === "solicitacoes" && pendentes.length > 0 && (
+                    <span className="ml-2 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-brand-600 px-1.5 text-xs font-semibold text-onbrand">{pendentes.length}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </nav>
 
-function BannerAssinatura({ salao, navigate }) {
-  if (salao.acesso_liberado) {
-    return (
-      <div className="bg-green-50 border border-green-200 text-green-800 text-sm rounded-md px-4 py-3 flex items-center justify-between">
-        <span>Assinatura em dia. Painel liberado.</span>
-        <Link to="/assinatura" className="underline">Ver assinatura</Link>
-      </div>
-    );
-  }
-  return (
-    <div className="bg-red-50 border border-red-200 text-red-800 text-sm rounded-md px-4 py-3 flex items-center justify-between">
-      <span>Assinatura vencida — a gestão do salão está bloqueada até a regularização.</span>
-      <button onClick={() => navigate("/assinatura")} className="underline font-medium">
-        Regularizar agora
-      </button>
+          <main className="mx-auto max-w-6xl px-4 py-6">
+            {erro && <p role="alert" className="mb-4 text-sm text-[rgb(var(--bad-fg))]">{erro}</p>}
+            {salao && aba === "solicitacoes" && <SolicitacoesTab pendentes={pendentes} profissionais={profissionais} recarregar={recarregarPendentes} />}
+            {salao && aba === "agenda" && <AgendaTab salao={salao} servicos={servicos} profissionais={profissionais} recarregarPendentes={recarregarPendentes} />}
+            {salao && aba === "clientes" && <ClientesTab salao={salao} />}
+            {salao && aba === "procedimentos" && <ProcedimentosTab salaoId={salao.id} servicos={servicos} recarregar={recarregarServicos} />}
+            {salao && aba === "equipe" && <EquipeTab salao={salao} profissionais={profissionais} recarregarProfissionais={recarregarProfissionais} ehDono={ehDono} />}
+            {salao && aba === "config" && <ConfigTab salao={salao} recarregarSalao={recarregarSalao} ehDono={ehDono} />}
+          </main>
+        </>
+      )}
     </div>
   );
 }
 
 function CriarSalaoForm({ onCriado }) {
   const [form, setForm] = useState({
-    nome: "",
-    telefone: "",
-    endereco: "",
-    horario_abertura: "09:00",
-    horario_fechamento: "19:00",
+    nome: "", telefone: "", endereco: "", horario_abertura: "09:00", horario_fechamento: "19:00",
     dias_funcionamento: [0, 1, 2, 3, 4, 5],
   });
   const [erro, setErro] = useState("");
   const [enviando, setEnviando] = useState(false);
 
   function alternarDia(dia) {
-    setForm((atual) => {
-      const jaTem = atual.dias_funcionamento.includes(dia);
-      return {
-        ...atual,
-        dias_funcionamento: jaTem
-          ? atual.dias_funcionamento.filter((d) => d !== dia)
-          : [...atual.dias_funcionamento, dia].sort(),
-      };
-    });
+    setForm((f) => ({
+      ...f,
+      dias_funcionamento: f.dias_funcionamento.includes(dia)
+        ? f.dias_funcionamento.filter((d) => d !== dia)
+        : [...f.dias_funcionamento, dia].sort(),
+    }));
   }
 
   async function enviar(e) {
-    e.preventDefault();
-    setErro("");
-    setEnviando(true);
+    e.preventDefault(); setErro(""); setEnviando(true);
     try {
       const { data } = await api.post("/saloes/", form);
       onCriado(data);
@@ -159,167 +201,30 @@ function CriarSalaoForm({ onCriado }) {
   }
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-6 max-w-lg">
-      <h2 className="font-semibold mb-4">Cadastre seu salão</h2>
+    <div className="card">
+      <h2 className="titulo mb-1 text-xl">Cadastre seu salão</h2>
+      <p className="mb-5 text-sm text-muted">Leva um minuto. Depois você cadastra os procedimentos, a equipe e os dias de atendimento.</p>
       <form onSubmit={enviar} className="space-y-3">
-        <input required placeholder="Nome do salão" className="w-full border rounded-md px-3 py-2 text-sm"
-          value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
-        <input required placeholder="Telefone" className="w-full border rounded-md px-3 py-2 text-sm"
-          value={form.telefone} onChange={(e) => setForm({ ...form, telefone: e.target.value })} />
-        <input placeholder="Endereço" className="w-full border rounded-md px-3 py-2 text-sm"
-          value={form.endereco} onChange={(e) => setForm({ ...form, endereco: e.target.value })} />
-        <div className="flex gap-3">
-          <label className="text-sm text-gray-600 flex-1">
-            Abertura
-            <input type="time" className="w-full border rounded-md px-3 py-2 text-sm mt-1"
-              value={form.horario_abertura} onChange={(e) => setForm({ ...form, horario_abertura: e.target.value })} />
-          </label>
-          <label className="text-sm text-gray-600 flex-1">
-            Fechamento
-            <input type="time" className="w-full border rounded-md px-3 py-2 text-sm mt-1"
-              value={form.horario_fechamento} onChange={(e) => setForm({ ...form, horario_fechamento: e.target.value })} />
-          </label>
+        <input required placeholder="Nome do salão ou barbearia" className="input" value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
+        <input required placeholder="Telefone / WhatsApp" className="input" value={form.telefone} onChange={(e) => setForm({ ...form, telefone: e.target.value })} />
+        <input placeholder="Endereço (opcional)" className="input" value={form.endereco} onChange={(e) => setForm({ ...form, endereco: e.target.value })} />
+        <div className="grid grid-cols-2 gap-3">
+          <div><label className="rotulo" htmlFor="n-ab">Abre às</label>
+            <input id="n-ab" type="time" className="input" value={form.horario_abertura} onChange={(e) => setForm({ ...form, horario_abertura: e.target.value })} /></div>
+          <div><label className="rotulo" htmlFor="n-fe">Fecha às</label>
+            <input id="n-fe" type="time" className="input" value={form.horario_fechamento} onChange={(e) => setForm({ ...form, horario_fechamento: e.target.value })} /></div>
         </div>
         <div>
-          <p className="text-sm text-gray-600 mb-1">Dias de funcionamento</p>
-          <div className="flex gap-1 flex-wrap">
-            {DIAS_SEMANA.map((label, indice) => (
-              <button type="button" key={indice}
-                onClick={() => alternarDia(indice)}
-                className={`px-2 py-1 rounded-md text-xs border ${
-                  form.dias_funcionamento.includes(indice)
-                    ? "bg-brand-600 text-white border-brand-600"
-                    : "bg-white text-gray-600 border-gray-300"
-                }`}>
-                {label}
-              </button>
+          <p className="rotulo">Dias em que atende</p>
+          <div className="flex flex-wrap gap-1.5">
+            {DIAS_SEMANA_CURTO.map((nome, i) => (
+              <button type="button" key={nome} className={form.dias_funcionamento.includes(i) ? "chip-on" : "chip"} onClick={() => alternarDia(i)}>{nome}</button>
             ))}
           </div>
         </div>
-        {erro && <p className="text-sm text-red-600">{erro}</p>}
-        <button disabled={enviando} className="bg-brand-600 hover:bg-brand-700 text-white rounded-md py-2 px-4 text-sm">
-          {enviando ? "Salvando..." : "Criar salão"}
-        </button>
+        {erro && <p role="alert" className="text-sm text-[rgb(var(--bad-fg))]">{erro}</p>}
+        <button disabled={enviando} className="btn-primary w-full">{enviando ? "Salvando…" : "Criar salão"}</button>
       </form>
     </div>
-  );
-}
-
-function SecaoServicos({ salaoId, servicos, recarregar, bloqueado }) {
-  const [form, setForm] = useState({ nome: "", duracao_minutos: 30, preco: "" });
-  const [erro, setErro] = useState("");
-
-  async function adicionar(e) {
-    e.preventDefault();
-    setErro("");
-    try {
-      await api.post(`/saloes/${salaoId}/servicos`, form);
-      setForm({ nome: "", duracao_minutos: 30, preco: "" });
-      recarregar();
-    } catch (err) {
-      setErro(extrairMensagemErro(err));
-    }
-  }
-
-  return (
-    <section className="bg-white border border-gray-200 rounded-xl p-6">
-      <h2 className="font-semibold mb-4">Serviços</h2>
-      <ul className="mb-4 divide-y divide-gray-100">
-        {servicos.map((s) => (
-          <li key={s.id} className="py-2 flex justify-between text-sm">
-            <span>{s.nome} — {s.duracao_minutos} min</span>
-            <span className="text-gray-500">R$ {s.preco.toFixed(2)}</span>
-          </li>
-        ))}
-        {servicos.length === 0 && <p className="text-sm text-gray-400 py-2">Nenhum serviço cadastrado ainda.</p>}
-      </ul>
-
-      {!bloqueado && (
-        <form onSubmit={adicionar} className="flex gap-2 flex-wrap items-end">
-          <input required placeholder="Nome do serviço" className="border rounded-md px-3 py-2 text-sm flex-1 min-w-[150px]"
-            value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
-          <input required type="number" min="5" placeholder="Duração (min)" className="border rounded-md px-3 py-2 text-sm w-32"
-            value={form.duracao_minutos} onChange={(e) => setForm({ ...form, duracao_minutos: e.target.value })} />
-          <input required type="number" min="0" step="0.01" placeholder="Preço (R$)" className="border rounded-md px-3 py-2 text-sm w-32"
-            value={form.preco} onChange={(e) => setForm({ ...form, preco: e.target.value })} />
-          <button className="bg-brand-600 hover:bg-brand-700 text-white rounded-md py-2 px-4 text-sm">Adicionar</button>
-        </form>
-      )}
-      {erro && <p className="text-sm text-red-600 mt-2">{erro}</p>}
-    </section>
-  );
-}
-
-function SecaoProfissionais({ salaoId, profissionais, recarregar, bloqueado }) {
-  const [form, setForm] = useState({ nome: "", email: "", telefone: "", senha_provisoria: "", especialidade: "" });
-  const [erro, setErro] = useState("");
-
-  async function adicionar(e) {
-    e.preventDefault();
-    setErro("");
-    try {
-      await api.post(`/saloes/${salaoId}/profissionais`, form);
-      setForm({ nome: "", email: "", telefone: "", senha_provisoria: "", especialidade: "" });
-      recarregar();
-    } catch (err) {
-      setErro(extrairMensagemErro(err));
-    }
-  }
-
-  return (
-    <section className="bg-white border border-gray-200 rounded-xl p-6">
-      <h2 className="font-semibold mb-4">Profissionais</h2>
-      <ul className="mb-4 divide-y divide-gray-100">
-        {profissionais.map((p) => (
-          <li key={p.id} className="py-2 text-sm">
-            {p.nome} {p.especialidade ? `— ${p.especialidade}` : ""}
-          </li>
-        ))}
-        {profissionais.length === 0 && <p className="text-sm text-gray-400 py-2">Nenhum profissional cadastrado ainda.</p>}
-      </ul>
-
-      {!bloqueado && (
-        <form onSubmit={adicionar} className="grid grid-cols-2 gap-2">
-          <input required placeholder="Nome" className="border rounded-md px-3 py-2 text-sm"
-            value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
-          <input required type="email" placeholder="E-mail" className="border rounded-md px-3 py-2 text-sm"
-            value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <input required placeholder="Telefone" className="border rounded-md px-3 py-2 text-sm"
-            value={form.telefone} onChange={(e) => setForm({ ...form, telefone: e.target.value })} />
-          <input required type="password" placeholder="Senha provisória" className="border rounded-md px-3 py-2 text-sm"
-            value={form.senha_provisoria} onChange={(e) => setForm({ ...form, senha_provisoria: e.target.value })} />
-          <input placeholder="Especialidade (opcional)" className="border rounded-md px-3 py-2 text-sm col-span-2"
-            value={form.especialidade} onChange={(e) => setForm({ ...form, especialidade: e.target.value })} />
-          <button className="bg-brand-600 hover:bg-brand-700 text-white rounded-md py-2 px-4 text-sm col-span-2">
-            Cadastrar profissional
-          </button>
-        </form>
-      )}
-      {erro && <p className="text-sm text-red-600 mt-2">{erro}</p>}
-    </section>
-  );
-}
-
-function SecaoAgendamentos({ agendamentos, onCancelar }) {
-  return (
-    <section className="bg-white border border-gray-200 rounded-xl p-6">
-      <h2 className="font-semibold mb-4">Agendamentos</h2>
-      <ul className="divide-y divide-gray-100">
-        {agendamentos.map((a) => (
-          <li key={a.id} className="py-2 flex justify-between items-center text-sm">
-            <span>
-              {new Date(a.inicio).toLocaleString("pt-BR")} — {a.cliente_nome} com {a.profissional_nome} ({a.servico_nome})
-              <span className="ml-2 text-xs text-gray-400">[{a.status}]</span>
-            </span>
-            {a.status !== "cancelado" && (
-              <button onClick={() => onCancelar(a.id)} className="text-red-600 hover:underline text-xs">
-                Cancelar
-              </button>
-            )}
-          </li>
-        ))}
-        {agendamentos.length === 0 && <p className="text-sm text-gray-400 py-2">Nenhum agendamento ainda.</p>}
-      </ul>
-    </section>
   );
 }

@@ -22,7 +22,8 @@ from flask import Blueprint, request, jsonify, current_app
 
 from app.extensions import db
 from app.models.assinatura import Assinatura, StatusAssinatura
-from app.services import mercado_pago_service
+from app.models.salao import Salao
+from app.services import mercado_pago_service, bot_whatsapp_service, whatsapp_service
 
 logger = logging.getLogger(__name__)
 
@@ -143,3 +144,55 @@ def _processar_atualizacao_pagamento(payment_id: str) -> None:
         assinatura.data_proximo_vencimento = datetime.utcnow() + timedelta(days=30)
         db.session.commit()
         logger.info("Pagamento aprovado para assinatura %s, vencimento renovado.", assinatura.id)
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp: mensagens recebidas pelo número do salão (bot de agendamento)
+# ---------------------------------------------------------------------------
+# Configure no provedor a URL:  <API>/api/webhooks/whatsapp/<id-do-salao>?token=<WHATSAPP_WEBHOOK_TOKEN>
+#   - Evolution API: Webhook da instância, evento MESSAGES_UPSERT.
+#   - Meta Cloud API: Webhook do app (o GET abaixo responde ao desafio de verificação).
+# O id do salão aparece na tela Configurações do painel.
+
+def _token_do_webhook_whatsapp_confere() -> bool:
+    """Se WHATSAPP_WEBHOOK_TOKEN estiver definido, exige o mesmo valor em ?token=."""
+    esperado = current_app.config.get("WHATSAPP_WEBHOOK_TOKEN")
+    if not esperado:
+        return True
+    return hmac.compare_digest(request.args.get("token", ""), esperado)
+
+
+@webhook_bp.get("/whatsapp/<salao_id>")
+def verificar_webhook_whatsapp(salao_id):
+    """Verificação inicial da Meta Cloud API (hub.challenge)."""
+    esperado = current_app.config.get("WHATSAPP_META_VERIFY_TOKEN")
+    if (esperado and request.args.get("hub.mode") == "subscribe"
+            and hmac.compare_digest(request.args.get("hub.verify_token", ""), esperado)):
+        return request.args.get("hub.challenge", ""), 200
+    return jsonify({"erro": "Verificação recusada."}), 403
+
+
+@webhook_bp.post("/whatsapp/<salao_id>")
+def receber_mensagem_whatsapp(salao_id):
+    if not _token_do_webhook_whatsapp_confere():
+        return jsonify({"erro": "Token inválido."}), 401
+
+    salao = db.session.get(Salao, salao_id)
+    if salao is None:
+        return jsonify({"erro": "Salão não encontrado."}), 404
+
+    app = current_app._get_current_object()
+    payload = request.get_json(silent=True) or {}
+    for telefone, texto, nome in bot_whatsapp_service.extrair_mensagens_recebidas(payload):
+        try:
+            respostas = bot_whatsapp_service.processar_mensagem(app, salao, telefone, texto, nome)
+        except Exception:
+            # Um erro numa conversa não pode fazer o provedor reenviar tudo em loop.
+            db.session.rollback()
+            logger.exception("Erro no bot de WhatsApp (salão %s, telefone %s)", salao_id, telefone)
+            continue
+        for resposta in respostas:
+            whatsapp_service.enviar_mensagem(app, telefone, resposta, salao)
+
+    # Sempre 200 rápido: o provedor reenvia a mensagem se receber erro.
+    return jsonify({"status": "recebido"}), 200

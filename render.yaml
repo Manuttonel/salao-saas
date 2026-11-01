@@ -1,0 +1,57 @@
+# Blueprint do Render (https://render.com): cria o banco PostgreSQL e o
+# servidor do backend (Flask) a partir deste repositório.
+#
+# O FRONTEND não fica aqui: ele vai para a Vercel (pasta "frontend").
+#
+# Depois de criar o Blueprint, preencha no painel do Render as variáveis
+# marcadas com "sync: false" (são segredos e nunca ficam no repositório):
+#   FRONTEND_URL   endereço do site na Vercel (ex.: https://meusalao.vercel.app)
+#                  — pode listar vários separados por vírgula
+#   MERCADOPAGO_*  e WHATSAPP_*  quando for ativar cobrança e WhatsApp reais
+#
+# Atenção ao plano: o plano gratuito do Render "dorme" após 15 min sem uso,
+# o que atrasa o primeiro acesso e IMPEDE os lembretes automáticos de
+# WhatsApp e o recebimento de mensagens do bot. Para uso real, use um plano
+# pago (o mais barato já mantém o serviço sempre ligado).
+
+databases:
+  - name: salao-db
+    plan: free
+    databaseName: salao_saas
+    user: salao
+
+services:
+  - type: web
+    name: salao-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: salao-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: FRONTEND_URL
+        sync: false
+      - key: WHATSAPP_MODO_SIMULACAO
+        value: "true"
+      - key: WHATSAPP_WEBHOOK_TOKEN
+        generateValue: true
+      - key: PLATFORM_SUBSCRIPTION_PRICE
+        value: "99.90"
+      - key: MERCADOPAGO_ACCESS_TOKEN
+        sync: false
+      - key: MERCADOPAGO_PUBLIC_KEY
+        sync: false
+      - key: MERCADOPAGO_WEBHOOK_SECRET
+        sync: false
+      - key: MERCADOPAGO_WEBHOOK_URL
+        sync: false

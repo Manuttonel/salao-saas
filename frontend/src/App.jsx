@@ -1,5 +1,5 @@
-// Define todas as rotas da aplicação e protege cada dashboard com o
-// papel de usuário correto (ProtectedRoute).
+// Define todas as rotas da aplicação e protege cada painel com o papel de
+// usuário correto (ProtectedRoute).
 
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
@@ -16,10 +16,11 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
 
+        {/* Dono e administradores usam o mesmo painel de gestão. */}
         <Route
           path="/dashboard"
           element={
-            <ProtectedRoute papeisPermitidos={["dono"]}>
+            <ProtectedRoute papeisPermitidos={["dono", "administrador"]}>
               <DashboardDono />
             </ProtectedRoute>
           }
@@ -43,6 +44,7 @@ export default function App() {
           }
         />
 
+        {/* Assinatura da plataforma: só o dono. */}
         <Route
           path="/assinatura"
           element={

@@ -35,6 +35,10 @@ api.interceptors.response.use(
   }
 );
 
+// Endereço base da API (também mostrado ao administrador para configurar o
+// webhook do WhatsApp).
+export const URL_BASE_API = api.defaults.baseURL;
+
 export default api;
 
 // --- Funções auxiliares de autenticação, usadas pelas páginas ---

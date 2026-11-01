@@ -1,235 +1,164 @@
 # Salão SaaS
 
-Sistema multi-perfil (dono, profissional, cliente) para salões de beleza e
-barbearias: agendamento com prevenção automática de conflitos de horário,
-cobrança recorrente da assinatura da plataforma via Mercado Pago (com
-webhooks), lembretes e confirmações via WhatsApp, e rotinas em segundo
-plano (APScheduler) para verificar assinaturas vencidas e disparar
-lembretes de agendamento.
+Sistema para salões de beleza e barbearias. O cliente **solicita** um horário
+(pelo site ou pelo WhatsApp), os administradores do salão **aceitam ou
+recusam**, e só o horário aceito fica indisponível para os outros clientes.
 
-Este projeto foi construído e **testado de ponta a ponta** (backend com
-`pytest`, frontend testado manualmente no navegador: cadastro, login,
-criação de salão/serviço/profissional, agendamento com bloqueio de
-conflito, cancelamento e página de assinatura).
+## O que o sistema faz
+
+| Quem | O que faz |
+|---|---|
+| **Cliente** | Escolhe salão, procedimento (ou **Marcar Avaliação**), dia (só os disponíveis), profissional e horário, e envia a solicitação. Acompanha o status e recebe confirmação por WhatsApp. |
+| **Dono / administradores** (vários usuários) | Recebem as solicitações em tempo real, aceitam ou recusam, marcam no calendário os dias disponíveis, cadastram procedimentos com o tempo de cada um, controlam clientes e a equipe. O dono também gerencia administradores e a assinatura. |
+| **Profissional** (opcional, com login) | Vê a própria agenda e bloqueia horários. |
+| **Bot de WhatsApp** | O cliente conversa pelo WhatsApp (menu → procedimento → dia → horário → confirmar) e o pedido chega na mesma fila de solicitações do painel. |
+
+Destaques:
+
+- **Solicitação com aceite:** o pedido nasce *pendente* e **não bloqueia** a
+  agenda. Ao aceitar, vira *confirmado* e o horário some para os demais. Se
+  dois pedidos disputam o mesmo horário, o painel avisa ("Disputa horário") e
+  só o primeiro aceite vale.
+- **Procedimentos por categoria** (cabelo, unhas, estética, barba, outros), cada
+  um com **duração própria** — é ela que reserva o intervalo certo na agenda.
+- **Marcar Avaliação:** procedimento especial de duração curta, que o
+  administrador define. Já vem criado em todo salão.
+- **Dias disponíveis no calendário:** o administrador clica nos dias para
+  marcá-los como disponíveis/indisponíveis (com horário próprio, se quiser).
+  Há também o modo "atender somente nos dias que eu marcar".
+- **Controle de clientes (CRM):** fichas com observações e histórico. Nascem
+  do cadastro manual, do site ou do WhatsApp (reconhecidas pelo telefone).
+- **Temas escolhidos por cada pessoa:** **Unisex** (neutro, com cor à escolha),
+  **Glow** (claro, rosé e dourado, sofisticado) e **Dark** (preto, vermelho e
+  azul-marinho). A escolha fica salva na conta.
+- **Cobrança** da assinatura do salão via Mercado Pago (com webhook), lembretes
+  de WhatsApp 24 h e 1 h antes, e bloqueio do painel se a assinatura vencer
+  (o cliente final continua usando a agenda).
 
 ## Stack
 
-- **Backend:** Python 3.11+, Flask, SQLAlchemy, PostgreSQL, APScheduler,
-  SDK do Mercado Pago, JWT (Flask-JWT-Extended).
+- **Backend:** Python 3.11+, Flask, SQLAlchemy, PostgreSQL, APScheduler, Mercado Pago, JWT.
 - **Frontend:** React 18 + Vite, Tailwind CSS, Axios, React Router.
-- **Banco:** PostgreSQL (driver `psycopg` v3 — veja nota abaixo).
+- **Banco:** PostgreSQL com driver `psycopg` v3 (URL no formato `postgresql+psycopg://`;
+  endereços `postgres://` e `postgresql://` de hospedagens são convertidos sozinhos).
 
-> **Nota sobre o driver do PostgreSQL:** o enunciado original pedia
-> `psycopg2-binary`, mas em Python 3.13+/3.14 no Windows não há wheel
-> pré-compilado dele ainda (só compila com o Visual C++ Build Tools
-> instalado). Por isso o projeto usa `psycopg[binary]` (psycopg v3), que
-> tem wheels prontos para Windows e é 100% compatível com
-> Flask-SQLAlchemy — só muda o prefixo da URL de conexão, de
-> `postgresql://` para `postgresql+psycopg://` (já configurado em
-> `backend/app/config.py` e nos arquivos `.env.example`). Se você estiver
-> em Python 3.11/3.12, pode trocar para `psycopg2-binary` no
-> `requirements.txt` e ajustar a URL de volta para `postgresql://`, se
-> preferir.
-
-## Estrutura de pastas
+## Estrutura
 
 ```
 salao-saas/
 ├── backend/
 │   ├── app/
-│   │   ├── models/        # Usuario, Salao, Servico, Profissional, Cliente, Agendamento, Assinatura...
-│   │   ├── routes/        # auth, salao, agendamento, pagamento, webhook
-│   │   ├── services/      # mercado_pago_service, whatsapp_service, agendador_service
-│   │   └── scheduler/     # jobs.py (APScheduler)
-│   ├── migrations/        # geradas pelo Flask-Migrate (Alembic)
-│   ├── tests/              # pytest (auth, agendamento, health)
-│   ├── requirements.txt
-│   ├── .env.example
-│   └── run.py
+│   │   ├── models/      # usuario, salao (+Servico, DiaAgenda), profissional, cliente, agendamento, assinatura, conversa_whatsapp
+│   │   ├── routes/      # auth, salao, agendamento, cliente, pagamento, webhook
+│   │   ├── services/    # agendador, whatsapp, bot_whatsapp, cliente, mercado_pago
+│   │   └── scheduler/   # jobs (lembretes, vencimentos, expiração de pedidos)
+│   ├── migrations/      # Alembic
+│   ├── tests/           # pytest (30 testes)
+│   └── Dockerfile
 ├── frontend/
 │   ├── src/
-│   │   ├── pages/          # Login, DashboardDono, DashboardProfissional, AgendaCliente, Assinatura
-│   │   ├── components/     # Navbar, ProtectedRoute
-│   │   └── services/api.js # cliente Axios com JWT automático
-│   ├── package.json
-│   ├── vite.config.js
-│   └── .env.example
-├── docker-compose.yml
-└── README.md
+│   │   ├── pages/       # Login, DashboardDono (painel), DashboardProfissional, AgendaCliente, Assinatura
+│   │   ├── components/  # Navbar, Calendario, SeletorTema, admin/* (uma aba por arquivo)
+│   │   ├── context/     # TemaContext
+│   │   └── services/    # api, tema, formatar
+│   └── vercel.json
+├── docker-compose.yml   # desenvolvimento local
+└── render.yaml          # backend + banco em produção (Render)
 ```
 
-## Opção A — Rodar com Docker (mais simples)
+## Rodar localmente
 
-Pré-requisito: [Docker Desktop](https://www.docker.com/products/docker-desktop/) instalado e aberto.
-
-```bash
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
-docker-compose up --build
-```
-
-- Backend: http://localhost:5000
-- Frontend: http://localhost:5173
-- O banco `db` já sobe configurado e o backend aplica as migrações
-  automaticamente antes de iniciar (`flask db upgrade && python run.py`).
-
-Preencha as chaves do Mercado Pago/WhatsApp em `backend/.env` quando for
-usar essas integrações de verdade (veja a seção de variáveis abaixo).
-
-## Opção B — Rodar localmente (sem Docker)
-
-### 1. Instalar os pré-requisitos
-
-- **Python 3.11+**: https://www.python.org/downloads/ (marque "Add
-  python.exe to PATH" no instalador).
-- **Node.js 20 LTS**: https://nodejs.org/
-- **PostgreSQL**: https://www.postgresql.org/download/ — durante a
-  instalação, defina uma senha para o usuário `postgres` e anote-a.
-
-### 2. Criar os bancos de dados
-
-Com o PostgreSQL instalado, abra um terminal e rode (ajuste o usuário se
-necessário):
+Pré-requisitos: Python 3.11+, Node 20+, PostgreSQL (ou Docker Desktop).
 
 ```bash
+# 1) bancos
 psql -U postgres -c "CREATE DATABASE salao_saas;"
 psql -U postgres -c "CREATE DATABASE salao_saas_test;"
-```
 
-### 3. Backend
-
-```bash
+# 2) backend
 cd backend
 python -m venv venv
-
-# Windows:
-venv\Scripts\activate
-# Linux/Mac:
-source venv/bin/activate
-
+venv\Scripts\activate            # Linux/Mac: source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-```
+cp .env.example .env             # ajuste DATABASE_URL com a sua senha
+flask db upgrade                 # cria/atualiza as tabelas
+pytest                           # opcional
+python run.py                    # http://localhost:5000
 
-Abra `backend/.env` e ajuste pelo menos `DATABASE_URL` com a senha do seu
-PostgreSQL (formato `postgresql+psycopg://postgres:SUA_SENHA@localhost:5432/salao_saas`).
-
-Gere e aplique as migrações (primeira vez):
-
-```bash
-flask db init
-flask db migrate -m "modelos iniciais"
-flask db upgrade
-```
-
-Rode os testes (opcional, mas recomendado):
-
-```bash
-pytest
-```
-
-Suba o servidor:
-
-```bash
-python run.py
-```
-
-A API sobe em **http://localhost:5000** (`GET /api/health` para checar).
-
-### 4. Frontend
-
-Em outro terminal:
-
-```bash
+# 3) frontend (outro terminal)
 cd frontend
 npm install
 cp .env.example .env
-npm run dev
+npm run dev                      # http://localhost:5173
 ```
 
-O frontend sobe em **http://localhost:5173**.
+Com Docker: `cp backend/.env.example backend/.env && cp frontend/.env.example frontend/.env && docker-compose up --build`.
 
-## Variáveis de ambiente (`.env`)
+> No VS Code, **não use o botão ▶ "Run Python File"**: ele ignora o `venv`.
+> Ative o venv e rode `python run.py` no terminal.
+
+Fluxo para experimentar: crie uma conta de **dono**, cadastre o salão, abra
+**Procedimentos**, e em outra janela crie uma conta de **cliente** para
+solicitar um horário. Em **Configurações → Bot de WhatsApp** há um simulador
+para conversar com o bot sem precisar de celular.
+
+## Variáveis de ambiente
 
 ### `backend/.env`
 
-| Variável | Para que serve | Onde obter |
-|---|---|---|
-| `SECRET_KEY`, `JWT_SECRET_KEY` | Chaves de segurança do Flask/JWT | Gere qualquer string aleatória longa (ex.: `python -c "import secrets; print(secrets.token_hex(32))"`) |
-| `DATABASE_URL` | Conexão com o PostgreSQL | `postgresql+psycopg://usuario:senha@host:porta/banco` |
-| `MERCADOPAGO_ACCESS_TOKEN`, `MERCADOPAGO_PUBLIC_KEY` | Cobrança recorrente | Crie uma aplicação em https://www.mercadopago.com.br/developers/panel e use as credenciais de **teste** enquanto desenvolve |
-| `MERCADOPAGO_WEBHOOK_SECRET` | Valida que o webhook realmente veio do Mercado Pago | Painel do Mercado Pago → Webhooks → "Assinatura secreta" |
-| `MERCADOPAGO_WEBHOOK_URL` | URL pública que o Mercado Pago chama ao mudar status de pagamento | Em dev, exponha `localhost:5000` com [ngrok](https://ngrok.com/) ou similar |
-| `WHATSAPP_PROVIDER` | `meta_cloud_api` ou `evolution_api` | Veja comentários em `backend/app/services/whatsapp_service.py` |
-| `WHATSAPP_MODO_SIMULACAO` | Se `true`, mensagens só são logadas no console (não enviadas) | Deixe `true` enquanto não tiver credenciais reais de WhatsApp |
+| Variável | Para que serve |
+|---|---|
+| `SECRET_KEY`, `JWT_SECRET_KEY` | Chaves de segurança. Gere com `python -c "import secrets; print(secrets.token_hex(32))"`. **Em produção o servidor se recusa a iniciar com os valores de exemplo.** |
+| `DATABASE_URL` | Conexão com o PostgreSQL |
+| `FRONTEND_URL` | Site(s) autorizados a chamar a API (CORS). Vários, separados por vírgula |
+| `SCHEDULER_ATIVO` | Liga os jobs em segundo plano. Deixe `true` em um único processo |
+| `MERCADOPAGO_ACCESS_TOKEN`, `MERCADOPAGO_PUBLIC_KEY`, `MERCADOPAGO_WEBHOOK_SECRET`, `MERCADOPAGO_WEBHOOK_URL` | Cobrança. Crie uma aplicação em https://www.mercadopago.com.br/developers/panel (use credenciais de **teste** no início) |
+| `WHATSAPP_PROVIDER` | `evolution_api` ou `meta_cloud_api` |
+| `WHATSAPP_MODO_SIMULACAO` | `true` = mensagens só aparecem no log (nada é enviado) |
+| `WHATSAPP_WEBHOOK_TOKEN` | Segredo que o bot exige na URL do webhook (`?token=...`) |
+| `WHATSAPP_EVOLUTION_*`, `WHATSAPP_META_*` | Credenciais do provedor escolhido |
 
-Sem preencher as chaves do Mercado Pago/WhatsApp, o sistema continua
-funcionando normalmente para desenvolvimento — as chamadas de pagamento
-retornam um erro amigável explicando o que falta, e as mensagens de
-WhatsApp são simuladas (aparecem no log do backend, ex.:
-`[WHATSAPP SIMULADO] Para 5511999998888: ...`).
+Sem as chaves do Mercado Pago/WhatsApp tudo funciona em desenvolvimento: a
+cobrança devolve um erro explicando o que falta e o WhatsApp é simulado.
 
 ### `frontend/.env`
 
 | Variável | Para que serve |
 |---|---|
-| `VITE_API_URL` | URL base da API (`http://localhost:5000/api` por padrão) |
+| `VITE_API_URL` | Endereço da API, terminando em `/api` (ex.: `https://salao-api.onrender.com/api`) |
 
-## Como o sistema foi validado nesta entrega
+## Conectar o bot ao WhatsApp
 
-- **Backend:** suíte `pytest` com 5 testes passando, incluindo um teste
-  de ponta a ponta que garante que dois clientes não conseguem reservar
-  o mesmo horário do mesmo profissional (regra de negócio mais crítica
-  do sistema).
-- **Frontend:** testado manualmente no navegador, contra o backend real
-  (não mockado): cadastro de dono e cliente, login, criação de salão,
-  cadastro de serviço e profissional, cálculo de horários livres,
-  criação de agendamento, bloqueio de horários conflitantes,
-  cancelamento (pelo cliente e pelo profissional), e página de
-  assinatura (com erro tratado corretamente quando as chaves do Mercado
-  Pago não estão configuradas).
+1. Em **Configurações → Bot de WhatsApp** copie o endereço do webhook do salão.
+2. Cole no provedor: **Evolution API** (webhook da instância, evento
+   `MESSAGES_UPSERT`) ou **Meta Cloud API** (webhook do app).
+3. Defina `WHATSAPP_WEBHOOK_TOKEN` no servidor e acrescente `?token=SEU_TOKEN`
+   ao endereço do webhook.
+4. Preencha as credenciais do provedor e coloque `WHATSAPP_MODO_SIMULACAO=false`.
 
-## Tarefas entregues nesta versão
+## Publicar (GitHub + Vercel + backend)
 
-**Backend**
-- Models completos: `Usuario` (com papéis dono/profissional/cliente),
-  `Salao`, `Servico`, `Profissional`, `Indisponibilidade`, `Cliente`,
-  `Agendamento`, `Assinatura`.
-- Autenticação JWT com controle de papel por rota (`papel_requerido`).
-- CRUD de salão, serviços e profissionais (convite pelo dono).
-- Cálculo de horários disponíveis e prevenção de conflito de agenda
-  (com trava de linha no banco para evitar corrida em cliques
-  simultâneos).
-- Cancelamento de agendamento (cliente, profissional ou dono).
-- Assinatura recorrente via Mercado Pago (criação, consulta,
-  cancelamento) + webhook com validação de assinatura HMAC.
-- Bloqueio do painel do dono/profissional quando a assinatura vence
-  (cliente final continua enxergando a própria agenda).
-- Jobs do APScheduler: verificação diária de assinaturas vencidas +
-  lembretes de agendamento (24h e 1h antes) a cada 15 minutos.
-- Serviço de WhatsApp com dois provedores (Meta Cloud API / Evolution
-  API) e modo de simulação para desenvolvimento sem custo.
-- Testes automatizados (`pytest`).
+A **Vercel hospeda o frontend**. O backend (Flask com banco PostgreSQL e
+tarefas agendadas) precisa de um servidor sempre ligado — a Vercel não serve
+para isso. O repositório já traz o `render.yaml` para publicar o backend e o
+banco no Render (o `backend/Dockerfile` também serve para Railway, Fly.io etc.).
 
-**Frontend**
-- Login/cadastro (dono e cliente) com redirecionamento por papel.
-- Dashboard do dono: criação de salão, cadastro de serviços e
-  profissionais, listagem/cancelamento de agendamentos, banner de
-  status da assinatura.
-- Dashboard do profissional: agenda própria, marcação de
-  indisponibilidade, cancelamento.
-- Página do cliente: escolha de salão/serviço/profissional/data,
-  horários livres calculados em tempo real, agendamento e cancelamento.
-- Página de assinatura: status atual e botão para ir ao checkout do
-  Mercado Pago.
-- Rotas protegidas por papel (`ProtectedRoute`).
+1. **GitHub:** envie o código (`git push`). Os arquivos `.env` nunca vão: estão no `.gitignore`.
+2. **Backend no Render:** *New → Blueprint*, escolha este repositório. Preencha
+   `FRONTEND_URL` com o endereço do site na Vercel. As migrações rodam sozinhas
+   a cada deploy. Anote o endereço gerado (ex.: `https://salao-api.onrender.com`).
+   > O plano gratuito "dorme" após 15 min sem uso e então **não envia os
+   > lembretes de WhatsApp nem recebe mensagens do bot**. Para uso real use um plano pago.
+3. **Frontend na Vercel:** *Add New → Project*, importe o repositório, defina
+   **Root Directory = `frontend`** e a variável `VITE_API_URL` =
+   `https://SEU-BACKEND/api`. Cada `git push` publica de novo.
+4. **Domínio próprio:** Vercel → *Settings → Domains* → adicione o domínio e
+   aponte o DNS como a Vercel indicar. Depois inclua o domínio em `FRONTEND_URL` no backend.
 
-## O que fica para uma próxima entrega (fora do escopo pedido)
+## Testes
 
-- Fluxo de troca de senha provisória do profissional no primeiro
-  acesso.
-- Tela de detalhes/edição de um agendamento existente (hoje só
-  cria/cancela).
-- Paginação e filtros mais avançados nas listagens.
-- Deploy em produção (o `docker-compose.yml` entregue é voltado para
-  desenvolvimento local).
+`pytest` roda 30 testes (precisa do banco `salao_saas_test`): login e
+permissões, solicitação → aceite/recusa, bloqueio de horário só após
+confirmação, disputa entre pedidos, vários administradores, calendário
+(dias marcados e modo "só dias marcados"), duração da avaliação, controle de
+clientes, preferência de tema e a conversa completa do bot de WhatsApp.

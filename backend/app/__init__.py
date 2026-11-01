@@ -22,7 +22,10 @@ from app.extensions import db, migrate, jwt, cors, scheduler as agendador_schedu
 
 def create_app(config_name: str = "development") -> Flask:
     app = Flask(__name__)
-    app.config.from_object(config_by_name[config_name])
+    configuracao = config_by_name[config_name]
+    if hasattr(configuracao, "validar"):
+        configuracao.validar()
+    app.config.from_object(configuracao)
 
     # Garante que logs INFO apareçam no console (ex.: mensagens de
     # WhatsApp simuladas em app/services/whatsapp_service.py). O
@@ -40,7 +43,7 @@ def create_app(config_name: str = "development") -> Flask:
     jwt.init_app(app)
     # CORS liberado para o domínio do frontend (React). Em produção,
     # troque FRONTEND_URL no .env pelo domínio real do seu site.
-    cors.init_app(app, resources={r"/api/*": {"origins": app.config["FRONTEND_URL"]}})
+    cors.init_app(app, resources={r"/api/*": {"origins": app.config["CORS_ORIGINS"]}})
 
     # Garante que todos os models estejam registrados no SQLAlchemy antes
     # de qualquer create_all()/migração.
@@ -52,9 +55,11 @@ def create_app(config_name: str = "development") -> Flask:
     from app.routes.agendamento_routes import agendamento_bp
     from app.routes.pagamento_routes import pagamento_bp
     from app.routes.webhook_routes import webhook_bp
+    from app.routes.cliente_routes import cliente_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(salao_bp, url_prefix="/api/saloes")
+    app.register_blueprint(cliente_bp, url_prefix="/api/clientes")
     app.register_blueprint(agendamento_bp, url_prefix="/api/agendamentos")
     app.register_blueprint(pagamento_bp, url_prefix="/api/pagamentos")
     app.register_blueprint(webhook_bp, url_prefix="/api/webhooks")
@@ -79,7 +84,7 @@ def create_app(config_name: str = "development") -> Flask:
     # Flask recarrega o processo em modo debug (reloader cria 2 processos).
     from app.scheduler.jobs import registrar_jobs
 
-    if not agendador_scheduler.running:
+    if app.config["SCHEDULER_ATIVO"] and not agendador_scheduler.running:
         registrar_jobs(agendador_scheduler, app)
         agendador_scheduler.start()
 

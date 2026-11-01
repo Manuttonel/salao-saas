@@ -1,115 +1,115 @@
-// Painel do profissional: mostra a própria agenda e permite marcar
-// períodos como indisponíveis (folga, almoço etc.) e cancelar
-// agendamentos.
+// Painel do profissional (quem tem login): vê a própria agenda e bloqueia
+// períodos em que não pode atender (folga, almoço, médico...).
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import api, { obterUsuarioLogado, extrairMensagemErro } from "../services/api";
 import Navbar from "../components/Navbar";
+import { STATUS, formatarDataHora, formatarHora, formatarDiaCurto } from "../services/formatar";
 
 export default function DashboardProfissional() {
   const usuario = obterUsuarioLogado();
   const [agendamentos, setAgendamentos] = useState([]);
+  const [bloqueios, setBloqueios] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
-  const [formIndisponibilidade, setFormIndisponibilidade] = useState({
-    inicio: "",
-    fim: "",
-    motivo: "",
-  });
   const [mensagem, setMensagem] = useState("");
+  const [form, setForm] = useState({ inicio: "", fim: "", motivo: "" });
 
-  useEffect(() => {
-    carregarAgendamentos();
-  }, []);
-
-  async function carregarAgendamentos() {
-    setCarregando(true);
+  const carregar = useCallback(async () => {
     try {
-      const { data } = await api.get("/agendamentos/");
-      setAgendamentos(data);
+      const [ag, bl] = await Promise.all([
+        api.get("/agendamentos/", { params: { status: "pendente,confirmado,concluido", futuros: 1 } }),
+        api.get(`/saloes/profissionais/${usuario.profissional_id}/indisponibilidades`),
+      ]);
+      setAgendamentos(ag.data);
+      setBloqueios(bl.data);
     } catch (e) {
       setErro(extrairMensagemErro(e));
     } finally {
       setCarregando(false);
     }
-  }
+  }, [usuario.profissional_id]);
 
-  async function cancelar(id) {
+  useEffect(() => { carregar(); }, [carregar]);
+
+  async function acao(id, nome) {
     try {
-      await api.post(`/agendamentos/${id}/cancelar`);
-      await carregarAgendamentos();
+      await api.post(`/agendamentos/${id}/${nome}`);
+      carregar();
     } catch (e) {
       alert(extrairMensagemErro(e));
     }
   }
 
-  async function marcarIndisponibilidade(e) {
-    e.preventDefault();
-    setErro("");
-    setMensagem("");
+  async function bloquear(e) {
+    e.preventDefault(); setErro(""); setMensagem("");
     try {
-      await api.post(`/saloes/profissionais/${usuario.profissional_id}/indisponibilidades`, formIndisponibilidade);
-      setMensagem("Período marcado como indisponível.");
-      setFormIndisponibilidade({ inicio: "", fim: "", motivo: "" });
-    } catch (e2) {
-      setErro(extrairMensagemErro(e2));
+      await api.post(`/saloes/profissionais/${usuario.profissional_id}/indisponibilidades`, form);
+      setMensagem("Período bloqueado.");
+      setForm({ inicio: "", fim: "", motivo: "" });
+      carregar();
+    } catch (err) {
+      setErro(extrairMensagemErro(err));
     }
+  }
+
+  async function desbloquear(id) {
+    await api.delete(`/saloes/indisponibilidades/${id}`);
+    carregar();
   }
 
   return (
     <div>
-      <Navbar usuario={usuario} />
-      <div className="max-w-4xl mx-auto px-4 py-8 space-y-8">
-        <section className="bg-white border border-gray-200 rounded-xl p-6">
-          <h2 className="font-semibold mb-4">Minha agenda</h2>
+      <Navbar usuario={usuario} titulo="Minha agenda" />
+      <main className="mx-auto grid max-w-5xl gap-6 px-4 py-8 lg:grid-cols-[1fr_340px]">
+        <section className="card">
+          <h2 className="titulo mb-4 text-lg">Próximos atendimentos</h2>
           {carregando ? (
-            <p className="text-sm text-gray-500">Carregando...</p>
+            <p className="text-sm text-muted">Carregando…</p>
           ) : (
-            <ul className="divide-y divide-gray-100">
+            <ul className="divide-y divide-line">
               {agendamentos.map((a) => (
-                <li key={a.id} className="py-2 flex justify-between items-center text-sm">
-                  <span>
-                    {new Date(a.inicio).toLocaleString("pt-BR")} — {a.cliente_nome} ({a.servico_nome})
-                    <span className="ml-2 text-xs text-gray-400">[{a.status}]</span>
-                  </span>
-                  {a.status !== "cancelado" && (
-                    <button onClick={() => cancelar(a.id)} className="text-red-600 hover:underline text-xs">
-                      Cancelar
-                    </button>
-                  )}
+                <li key={a.id} className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm">
+                  <div>
+                    <p className="font-medium">{formatarDataHora(a.inicio)} · {a.cliente_nome}</p>
+                    <p className="text-xs text-muted">{a.servico_nome} ({a.duracao_minutos} min)</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={STATUS[a.status].classe}>{STATUS[a.status].texto}</span>
+                    {a.status === "confirmado" && <button className="btn-outline btn-sm" onClick={() => acao(a.id, "concluir")}>Concluir</button>}
+                  </div>
                 </li>
               ))}
-              {agendamentos.length === 0 && <p className="text-sm text-gray-400 py-2">Nenhum agendamento.</p>}
+              {agendamentos.length === 0 && <li className="py-3 text-sm text-muted">Nenhum atendimento futuro.</li>}
             </ul>
           )}
-          {erro && <p className="text-sm text-red-600 mt-2">{erro}</p>}
+          {erro && <p role="alert" className="mt-3 text-sm text-[rgb(var(--bad-fg))]">{erro}</p>}
         </section>
 
-        <section className="bg-white border border-gray-200 rounded-xl p-6 max-w-md">
-          <h2 className="font-semibold mb-4">Marcar indisponibilidade</h2>
-          <form onSubmit={marcarIndisponibilidade} className="space-y-3">
-            <label className="text-sm text-gray-600 block">
-              Início
-              <input required type="datetime-local" className="w-full border rounded-md px-3 py-2 text-sm mt-1"
-                value={formIndisponibilidade.inicio}
-                onChange={(e) => setFormIndisponibilidade({ ...formIndisponibilidade, inicio: e.target.value })} />
-            </label>
-            <label className="text-sm text-gray-600 block">
-              Fim
-              <input required type="datetime-local" className="w-full border rounded-md px-3 py-2 text-sm mt-1"
-                value={formIndisponibilidade.fim}
-                onChange={(e) => setFormIndisponibilidade({ ...formIndisponibilidade, fim: e.target.value })} />
-            </label>
-            <input placeholder="Motivo (opcional)" className="w-full border rounded-md px-3 py-2 text-sm"
-              value={formIndisponibilidade.motivo}
-              onChange={(e) => setFormIndisponibilidade({ ...formIndisponibilidade, motivo: e.target.value })} />
-            <button className="bg-brand-600 hover:bg-brand-700 text-white rounded-md py-2 px-4 text-sm">
-              Marcar
-            </button>
+        <section className="card h-fit">
+          <h2 className="titulo mb-4 text-lg">Bloquear horário</h2>
+          <form onSubmit={bloquear} className="space-y-3">
+            <div><label className="rotulo" htmlFor="b-ini">Início</label>
+              <input id="b-ini" required type="datetime-local" className="input" value={form.inicio} onChange={(e) => setForm({ ...form, inicio: e.target.value })} /></div>
+            <div><label className="rotulo" htmlFor="b-fim">Fim</label>
+              <input id="b-fim" required type="datetime-local" className="input" value={form.fim} onChange={(e) => setForm({ ...form, fim: e.target.value })} /></div>
+            <input className="input" placeholder="Motivo (opcional)" value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} />
+            <button className="btn-primary w-full">Bloquear</button>
           </form>
-          {mensagem && <p className="text-sm text-green-600 mt-2">{mensagem}</p>}
+          {mensagem && <p role="status" className="mt-2 text-sm text-[rgb(var(--ok-fg))]">{mensagem}</p>}
+
+          {bloqueios.length > 0 && (
+            <ul className="mt-5 space-y-2 text-sm">
+              {bloqueios.map((b) => (
+                <li key={b.id} className="flex items-center justify-between gap-2 rounded-lg border border-line px-3 py-2">
+                  <span>{formatarDiaCurto(b.inicio)} {formatarHora(b.inicio)}–{formatarHora(b.fim)}{b.motivo ? ` · ${b.motivo}` : ""}</span>
+                  <button className="btn-ghost btn-sm" onClick={() => desbloquear(b.id)} aria-label="Remover bloqueio">✕</button>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
-      </div>
+      </main>
     </div>
   );
 }

@@ -12,6 +12,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+ENV FLASK_ENV=production
 EXPOSE 5000
 
-CMD ["sh", "-c", "flask db upgrade && python run.py"]
+# 1) aplica as migrações do banco; 2) sobe o gunicorn.
+# UM worker (com várias threads) de propósito: o agendador de tarefas
+# (lembretes de WhatsApp) roda dentro do processo, e com 2+ workers cada um
+# enviaria o mesmo lembrete. A porta vem da variável PORT (Render, Railway...).
+CMD ["sh", "-c", "flask --app run.py db upgrade && gunicorn run:app --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 60"]

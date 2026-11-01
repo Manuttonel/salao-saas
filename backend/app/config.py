@@ -27,6 +27,27 @@ def _env_bool(nome, padrao=False):
     return valor.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _normalizar_url_banco(url: str) -> str:
+    """
+    Provedores de hospedagem (Render, Railway, Heroku...) entregam a URL do
+    PostgreSQL como "postgres://..." ou "postgresql://...". Este projeto usa
+    o driver psycopg v3, que o SQLAlchemy só encontra com o prefixo
+    "postgresql+psycopg://" — então ajustamos aqui, uma vez só.
+    """
+    for prefixo in ("postgres://", "postgresql://"):
+        if url.startswith(prefixo):
+            return "postgresql+psycopg://" + url[len(prefixo):]
+    return url
+
+
+def _lista_env(nome: str, padrao: str) -> list:
+    """Lê uma variável com valores separados por vírgula: 'a.com, b.com' -> ['a.com', 'b.com']."""
+    return [item.strip().rstrip("/") for item in os.getenv(nome, padrao).split(",") if item.strip()]
+
+
+CHAVES_PADRAO_INSEGURAS = {"troque-esta-chave-em-producao", "troque-esta-chave-jwt-tambem"}
+
+
 class Config:
     """Configuração base, compartilhada por todos os ambientes."""
 
@@ -36,11 +57,13 @@ class Config:
     # --- Banco de dados (PostgreSQL) ---
     # Formato esperado: postgresql://usuario:senha@host:porta/nome_do_banco
     # Usamos o driver psycopg (v3), daí o prefixo "postgresql+psycopg://".
-    SQLALCHEMY_DATABASE_URI = os.getenv(
+    SQLALCHEMY_DATABASE_URI = _normalizar_url_banco(os.getenv(
         "DATABASE_URL",
         "postgresql+psycopg://postgres:postgres@localhost:5432/salao_saas",
-    )
+    ))
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # Evita erro "conexão encerrada" em bancos hospedados que derrubam conexões ociosas.
+    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
 
     # --- JWT (autenticação) ---
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "troque-esta-chave-jwt-tambem")
@@ -52,7 +75,14 @@ class Config:
     )
 
     # --- Frontend (usado para montar links em mensagens e CORS) ---
+    # Pode ter VÁRIOS endereços separados por vírgula (ex.: o domínio próprio
+    # e o endereço .vercel.app). Só eles podem chamar a API pelo navegador.
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    CORS_ORIGINS = _lista_env("FRONTEND_URL", "http://localhost:5173")
+
+    # Em hospedagens com mais de um processo, deixe SCHEDULER_ATIVO=true em
+    # UM só (senão cada processo enviaria o lembrete de WhatsApp de novo).
+    SCHEDULER_ATIVO = _env_bool("SCHEDULER_ATIVO", True)
 
     # --- Mercado Pago ---
     # Access Token e Public Key de teste (sandbox) ou produção, obtidos em
@@ -94,6 +124,12 @@ class Config:
     WHATSAPP_EVOLUTION_INSTANCE = os.getenv("WHATSAPP_EVOLUTION_INSTANCE", "salao-saas")
     WHATSAPP_EVOLUTION_API_KEY = os.getenv("WHATSAPP_EVOLUTION_API_KEY", "")
 
+    # Segredo que o bot exige na URL do webhook (?token=...), para ninguém
+    # de fora conseguir "falar" com o bot. Deixe vazio só em desenvolvimento.
+    WHATSAPP_WEBHOOK_TOKEN = os.getenv("WHATSAPP_WEBHOOK_TOKEN", "")
+    # Usado só pela Meta Cloud API na verificação do webhook (GET).
+    WHATSAPP_META_VERIFY_TOKEN = os.getenv("WHATSAPP_META_VERIFY_TOKEN", "")
+
     # Se true, as mensagens de WhatsApp só são impressas no console em vez
     # de enviadas de verdade. Útil para desenvolver sem gastar créditos ou
     # sem ter uma instância de WhatsApp configurada ainda.
@@ -113,9 +149,18 @@ class DevelopmentConfig(Config):
 class ProductionConfig(Config):
     DEBUG = False
 
+    @classmethod
+    def validar(cls) -> None:
+        """Recusa subir em produção com as chaves de exemplo (qualquer um forjaria logins)."""
+        if cls.SECRET_KEY in CHAVES_PADRAO_INSEGURAS or cls.JWT_SECRET_KEY in CHAVES_PADRAO_INSEGURAS:
+            raise RuntimeError(
+                "Defina SECRET_KEY e JWT_SECRET_KEY com valores secretos e únicos antes de rodar em produção."
+            )
+
 
 class TestingConfig(Config):
     TESTING = True
+    SCHEDULER_ATIVO = False  # os testes não precisam dos jobs em segundo plano
     SQLALCHEMY_DATABASE_URI = os.getenv(
         "TEST_DATABASE_URL",
         "postgresql+psycopg://postgres:postgres@localhost:5432/salao_saas_test",

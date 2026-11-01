@@ -70,7 +70,10 @@ def enviar_lembretes_agendamento(app):
         from app.models.agendamento import Agendamento, StatusAgendamento
         from app.services import whatsapp_service
 
-        agora = datetime.utcnow()
+        # Os horários dos agendamentos são guardados em hora local (sem fuso),
+        # então a comparação também precisa ser em hora local — com utcnow()
+        # os lembretes sairiam 3 horas fora do horário.
+        agora = datetime.now()
 
         _enviar_lembretes_da_janela(
             app, agora, JANELA_LEMBRETE_24H, "lembrete_24h_enviado", horas=24
@@ -102,8 +105,36 @@ def _enviar_lembretes_da_janela(app, agora, janela: timedelta, campo_flag: str, 
         logger.info("Lembrete de %sh enviado para agendamento %s.", horas, agendamento.id)
 
 
+def expirar_solicitacoes_vencidas(app):
+    """
+    Solicitações que ninguém respondeu e cujo horário já passou não servem
+    mais: viram RECUSADO (com motivo) para sair da fila do administrador.
+    """
+    with app.app_context():
+        from app.models.agendamento import Agendamento, StatusAgendamento
+
+        vencidas = Agendamento.query.filter(
+            Agendamento.status == StatusAgendamento.PENDENTE,
+            Agendamento.inicio < datetime.now(),
+        ).all()
+        for agendamento in vencidas:
+            agendamento.status = StatusAgendamento.RECUSADO
+            agendamento.motivo_recusa = "Solicitação expirada sem resposta."
+        if vencidas:
+            db.session.commit()
+            logger.info("%s solicitação(ões) expirada(s).", len(vencidas))
+
+
 def registrar_jobs(scheduler, app) -> None:
     """Registra os jobs recorrentes no BackgroundScheduler."""
+    scheduler.add_job(
+        func=lambda: expirar_solicitacoes_vencidas(app),
+        trigger="interval",
+        hours=1,
+        id="expirar_solicitacoes_vencidas",
+        replace_existing=True,
+    )
+
     scheduler.add_job(
         func=lambda: verificar_assinaturas_vencidas(app),
         trigger="cron",

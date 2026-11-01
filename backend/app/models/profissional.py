@@ -2,13 +2,13 @@
 """
 Models Profissional e Indisponibilidade.
 
-Profissional é o perfil de quem atende os clientes (cabeleireiro,
-barbeiro etc.), ligado 1-para-1 a um Usuario (papel=profissional) e
-N-para-1 a um Salao. Cada profissional pode ter um horário de trabalho
-próprio (dentro do horário do salão) e pode marcar períodos como
-indisponíveis (folga, almoço, férias) — a lógica de agendamento em
-app/services/agendador_service.py cruza esses dados com os agendamentos
-já existentes para calcular os horários realmente livres.
+Profissional é quem atende os clientes (cabeleireiro, manicure, barbeiro
+etc.), ligado a um Salao. O profissional PODE ter login (usuario_id
+preenchido) mas não precisa: em salões pequenos o administrador
+simplesmente cadastra o nome de quem atende, sem criar conta.
+
+Cada profissional pode ter horário próprio (dentro do horário do salão) e
+pode ter períodos bloqueados (Indisponibilidade: almoço, folga, férias).
 """
 
 import uuid
@@ -21,14 +21,16 @@ class Profissional(db.Model):
 
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     usuario_id = db.Column(
-        db.String(36), db.ForeignKey("usuarios.id"), nullable=False, unique=True
+        db.String(36), db.ForeignKey("usuarios.id"), nullable=True, unique=True
     )
     salao_id = db.Column(db.String(36), db.ForeignKey("saloes.id"), nullable=False)
 
+    # Nome exibido nas agendas. Para quem tem login pode ficar vazio (usa o
+    # nome do usuário).
+    nome = db.Column(db.String(120), nullable=True)
     especialidade = db.Column(db.String(120), nullable=True)
 
-    # Horário de trabalho do profissional. Se nulo, assume-se o horário
-    # padrão do salão (ver Salao.horario_abertura/horario_fechamento).
+    # Horário de trabalho do profissional. Se nulo, vale o do salão.
     horario_inicio = db.Column(db.Time, nullable=True)
     horario_fim = db.Column(db.Time, nullable=True)
 
@@ -42,12 +44,19 @@ class Profissional(db.Model):
         "Indisponibilidade", back_populates="profissional", cascade="all, delete-orphan"
     )
 
+    @property
+    def nome_exibicao(self) -> str:
+        if self.nome:
+            return self.nome
+        return self.usuario.nome if self.usuario else "Profissional"
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "usuario_id": self.usuario_id,
             "salao_id": self.salao_id,
-            "nome": self.usuario.nome if self.usuario else None,
+            "nome": self.nome_exibicao,
+            "tem_login": self.usuario_id is not None,
             "especialidade": self.especialidade,
             "horario_inicio": self.horario_inicio.strftime("%H:%M") if self.horario_inicio else None,
             "horario_fim": self.horario_fim.strftime("%H:%M") if self.horario_fim else None,
@@ -58,8 +67,7 @@ class Profissional(db.Model):
 class Indisponibilidade(db.Model):
     """
     Período em que um profissional não pode receber agendamentos
-    (ex.: almoço, folga, férias). Usado pela lógica de disponibilidade
-    junto com os agendamentos já confirmados.
+    (ex.: almoço, folga, férias).
     """
 
     __tablename__ = "indisponibilidades"
